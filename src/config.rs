@@ -188,6 +188,16 @@ fn parse_config_str(raw: &str, path: &Path) -> Result<Config> {
         return Err(eyre!("at least one [cli.<name>] entry is required"));
     }
 
+    for cli_name in parsed.cli.keys() {
+        paths::validate_cli_name(cli_name).wrap_err_with(|| {
+            format!(
+                "invalid CLI entry name '{}' in {}",
+                cli_name,
+                path.display()
+            )
+        })?;
+    }
+
     Ok(parsed)
 }
 
@@ -240,6 +250,24 @@ default_profile = "personal"
         assert!(
             err.to_string()
                 .contains("at least one [cli.<name>] entry is required"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_config_rejects_invalid_cli_entry_name() {
+        let raw = r#"
+[general]
+default_profile = "personal"
+
+[cli."../../etc"]
+binary = "bad"
+config_dir_env = "BAD_HOME"
+"#;
+
+        let err = parse_config_str(raw, Path::new("config.toml")).expect_err("must fail");
+        assert!(
+            err.to_string().contains("invalid CLI entry name '../../etc'"),
             "unexpected error: {err}"
         );
     }
