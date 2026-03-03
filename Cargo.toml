@@ -1,0 +1,20 @@
+[package]
+name = "cloak"
+version = "0.1.0"
+edition = "2021"
+description = "LLM CLI profile manager by directory"
+license = "Apache-2.0"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"
+color-eyre = "0.6"
+owo-colors = "4"
+which = "6"
+
+[dev-dependencies]
+tempfile = "3"

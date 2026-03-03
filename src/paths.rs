@@ -1,0 +1,125 @@
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+use color_eyre::eyre::{eyre, Context, Result};
+
+pub fn cloak_config_dir() -> Result<PathBuf> {
+    let base = dirs::config_dir().ok_or_else(|| eyre!("unable to resolve XDG config directory"))?;
+    Ok(base.join("cloak"))
+}
+
+pub fn config_file_path() -> Result<PathBuf> {
+    Ok(cloak_config_dir()?.join("config.toml"))
+}
+
+pub fn profiles_dir() -> Result<PathBuf> {
+    Ok(cloak_config_dir()?.join("profiles"))
+}
+
+pub fn profile_dir(profile: &str) -> Result<PathBuf> {
+    validate_profile_name(profile)?;
+    Ok(profiles_dir()?.join(profile))
+}
+
+pub fn profile_cli_dir(profile: &str, cli_name: &str) -> Result<PathBuf> {
+    if cli_name.trim().is_empty() {
+        return Err(eyre!("CLI name cannot be empty"));
+    }
+
+    Ok(profile_dir(profile)?.join(cli_name))
+}
+
+pub fn ensure_secure_dir(path: &Path) -> Result<()> {
+    fs::create_dir_all(path)
+        .wrap_err_with(|| format!("failed creating directory {}", path.display()))?;
+
+    #[cfg(unix)]
+    set_owner_only_dir(path)?;
+
+    Ok(())
+}
+
+pub fn validate_profile_name(name: &str) -> Result<()> {
+    let value = name.trim();
+    if value.is_empty() {
+        return Err(eyre!("profile name cannot be empty"));
+    }
+
+    if value.contains('/') || value.contains('\\') {
+        return Err(eyre!("profile name cannot contain path separators"));
+    }
+
+    if value == "." || value == ".." {
+        return Err(eyre!("profile name cannot be '.' or '..'"));
+    }
+
+    if value.starts_with('-') {
+        return Err(eyre!("profile name cannot start with '-'"));
+    }
+
+    let valid = value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'));
+
+    if !valid {
+        return Err(eyre!(
+            "profile name must use only [a-zA-Z0-9._-] characters"
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+pub fn set_owner_only_dir(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .wrap_err_with(|| format!("failed setting permissions on {}", path.display()))
+}
+
+#[cfg(not(unix))]
+pub fn set_owner_only_dir(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+pub fn set_owner_only_file(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .wrap_err_with(|| format!("failed setting permissions on {}", path.display()))
+}
+
+#[cfg(not(unix))]
+pub fn set_owner_only_file(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_profile_name;
+
+    #[test]
+    fn test_validate_profile_name_accepts_safe_names() {
+        assert!(validate_profile_name("work").is_ok());
+        assert!(validate_profile_name("personal-1").is_ok());
+        assert!(validate_profile_name("client_x.prod").is_ok());
+    }
+
+    #[test]
+    fn test_validate_profile_name_rejects_path_chars() {
+        assert!(validate_profile_name("work/dev").is_err());
+        assert!(validate_profile_name("work\\dev").is_err());
+    }
+
+    #[test]
+    fn test_validate_profile_name_rejects_invalid_values() {
+        assert!(validate_profile_name("").is_err());
+        assert!(validate_profile_name("..").is_err());
+        assert!(validate_profile_name("-work").is_err());
+        assert!(validate_profile_name("hello world").is_err());
+    }
+}
