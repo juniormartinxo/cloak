@@ -147,7 +147,8 @@ If your config was created before Gemini support, run `cloak doctor` and accept 
 ## Commands
 
 ```text
-cloak exec <cli> [args...]         Resolve profile, set env, strip conflicting vars, exec CLI
+cloak exec <cli> [--profile <name>] [args...]
+                                   Resolve profile, set env, strip conflicting vars, exec CLI
 cloak use <profile>                Write .cloak in current directory
 cloak profile list                 List all profiles
 cloak profile create <name>        Create profile dirs (+ Claude statusline template on Unix)
@@ -159,6 +160,9 @@ cloak completions <shell>          Print shell completion script
 ```
 
 `cloak init <profile>` is still supported as a compatibility alias for `cloak use <profile>`.
+
+When using `cloak exec`, pass `--profile <name>` before any forwarded CLI args. Use `--` to
+forward an argument like `--profile` to the target CLI itself.
 
 ---
 
