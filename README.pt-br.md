@@ -160,6 +160,10 @@ cloak completions <shell>          Imprime script de autocompletar do shell
 Ao usar `cloak exec`, passe `--profile <nome>` antes dos argumentos repassados para a CLI.
 Use `--` se quiser encaminhar um argumento como `--profile` para a própria CLI alvo.
 
+Exemplo visual da feature em uso, executando a CLI com perfis isolados no momento do comando:
+
+![Demonstração do cloak executando o Claude em perfis isolados](./sources/images/cloak_claude.jpg)
+
 ---
 
 ## Arquitetura
