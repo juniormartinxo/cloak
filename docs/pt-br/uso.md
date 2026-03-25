@@ -63,6 +63,7 @@ Sem alias, voce precisa chamar `cloak exec` sempre:
 ```bash
 cloak exec claude
 cloak exec codex
+cloak exec codex --profile work
 ```
 
 Com alias no shell:
@@ -74,3 +75,13 @@ alias gemini='cloak exec gemini'
 ```
 
 Com isso, `claude`, `codex` e `gemini` passam automaticamente pelo `cloak`.
+
+Quando precisar, `cloak exec` tambem aceita um perfil explicito:
+
+```bash
+cloak exec codex --profile work
+cloak exec codex --profile work -- --model gpt-5.4
+```
+
+Passe `--profile <nome>` antes dos argumentos repassados para a CLI. Use `--` se quiser
+encaminhar uma flag como `--profile` para a propria CLI alvo.
