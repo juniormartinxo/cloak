@@ -164,6 +164,10 @@ cloak completions <shell>          Print shell completion script
 When using `cloak exec`, pass `--profile <name>` before any forwarded CLI args. Use `--` to
 forward an argument like `--profile` to the target CLI itself.
 
+Visual example of the feature in action, launching the CLI with isolated profiles at execution time:
+
+![Demonstration of cloak running Claude with isolated profiles](./sources/images/cloak_claude.jpg)
+
 ---
 
 ## Architecture
