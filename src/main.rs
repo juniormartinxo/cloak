@@ -35,10 +35,19 @@ fn main() -> Result<()> {
     let loaded = config::load_or_create_config()?;
 
     match cli.command {
-        Commands::Exec { cli, args } => {
-            let cwd = current_dir()?;
-            let resolved = profile::resolve_profile(&cwd, &loaded.config.general.default_profile)?;
-            exec::exec_cli(&cli, &resolved.name, &args, &loaded.config)?;
+        Commands::Exec { cli, profile, args } => {
+            let selected_profile = match profile {
+                Some(name) => {
+                    paths::validate_profile_name(&name)?;
+                    name
+                }
+                None => {
+                    let cwd = current_dir()?;
+                    profile::resolve_profile(&cwd, &loaded.config.general.default_profile)?.name
+                }
+            };
+
+            exec::exec_cli(&cli, &selected_profile, &args, &loaded.config)?;
         }
         Commands::Use {
             profile: profile_name,
