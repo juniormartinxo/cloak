@@ -19,6 +19,9 @@ pub enum Commands {
     Exec {
         /// Registered CLI name (for example: claude, codex)
         cli: String,
+        /// Optional explicit profile. Must be passed before forwarded CLI args.
+        #[arg(long)]
+        profile: Option<String>,
         /// Arguments forwarded to target CLI
         #[arg(allow_hyphen_values = true)]
         args: Vec<String>,
@@ -94,9 +97,52 @@ mod tests {
         ]);
 
         match parsed.command {
-            Commands::Exec { cli, args } => {
+            Commands::Exec { cli, profile, args } => {
                 assert_eq!(cli, "claude");
+                assert_eq!(profile, None);
                 assert_eq!(args, vec!["--model", "sonnet", "fix this bug"]);
+            }
+            _ => panic!("expected exec command"),
+        }
+    }
+
+    #[test]
+    fn test_exec_parses_explicit_profile_flag() {
+        let parsed = Cli::parse_from([
+            "cloak",
+            "exec",
+            "codex",
+            "--profile",
+            "work",
+            "fix this bug",
+        ]);
+
+        match parsed.command {
+            Commands::Exec { cli, profile, args } => {
+                assert_eq!(cli, "codex");
+                assert_eq!(profile.as_deref(), Some("work"));
+                assert_eq!(args, vec!["fix this bug"]);
+            }
+            _ => panic!("expected exec command"),
+        }
+    }
+
+    #[test]
+    fn test_exec_forwards_target_profile_flag_after_separator() {
+        let parsed = Cli::parse_from([
+            "cloak",
+            "exec",
+            "codex",
+            "--",
+            "--profile",
+            "target-profile",
+        ]);
+
+        match parsed.command {
+            Commands::Exec { cli, profile, args } => {
+                assert_eq!(cli, "codex");
+                assert_eq!(profile, None);
+                assert_eq!(args, vec!["--profile", "target-profile"]);
             }
             _ => panic!("expected exec command"),
         }
