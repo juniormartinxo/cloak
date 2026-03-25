@@ -144,6 +144,56 @@ mod unix_exec_tests {
     }
 
     #[test]
+    fn exec_explicit_profile_overrides_directory_resolution() {
+        let tmp = tempdir().expect("tempdir");
+        let bin_dir = tmp.path().join("bin");
+        let repo = tmp.path().join("repo-explicit-profile");
+        let xdg_config_home = tmp.path().join("xdg");
+
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+        fs::create_dir_all(&repo).expect("create repo dir");
+
+        let mock_binary = create_mock_binary(&bin_dir);
+        write_config(&xdg_config_home, &mock_binary, "personal");
+        fs::write(repo.join(".cloak"), "profile = \"work\"\n").expect("write .cloak");
+
+        let output = Command::new(cloak_bin())
+            .arg("exec")
+            .arg("mock")
+            .arg("--profile")
+            .arg("override")
+            .arg("alpha")
+            .arg("beta")
+            .current_dir(&repo)
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak exec");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let expected_profile_home = xdg_config_home
+            .join("cloak")
+            .join("profiles")
+            .join("override")
+            .join("mock");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!("MOCK_HOME={}", expected_profile_home.display())),
+            "explicit profile path not found in stdout:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("ARGS=alpha beta"),
+            "args were not forwarded as expected:\n{stdout}"
+        );
+    }
+
+    #[test]
     fn exec_uses_default_profile_when_no_cloak_file_exists() {
         let tmp = tempdir().expect("tempdir");
         let bin_dir = tmp.path().join("bin");
