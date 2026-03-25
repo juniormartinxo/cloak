@@ -85,3 +85,7 @@ cloak exec codex --profile work -- --model gpt-5.4
 
 Pass `--profile <name>` before forwarded CLI args. Use `--` to forward a flag like `--profile`
 to the target CLI itself.
+
+Visual example of execution with an explicit profile:
+
+![Demonstration of cloak running Claude with isolated profiles](../sources/images/cloak_claude.jpg)
