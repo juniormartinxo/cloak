@@ -267,7 +267,8 @@ config_dir_env = "BAD_HOME"
 
         let err = parse_config_str(raw, Path::new("config.toml")).expect_err("must fail");
         assert!(
-            err.to_string().contains("invalid CLI entry name '../../etc'"),
+            err.to_string()
+                .contains("invalid CLI entry name '../../etc'"),
             "unexpected error: {err}"
         );
     }
