@@ -74,6 +74,10 @@ Then use it normally:
 cloak exec aider
 ```
 
+It will also appear in `cloak profile account <name>`. For CLIs without dedicated inspection logic,
+the command falls back to a generic "credentials detected" message when the profile directory is
+non-empty.
+
 ## Optional migration for existing configs
 
 If your `config.toml` existed before a new recommended CLI block (for example `gemini`), run:
