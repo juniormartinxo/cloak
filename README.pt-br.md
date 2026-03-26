@@ -45,6 +45,7 @@ Sem wrappers rodando em segundo plano. Sem daemons. Sem estado persistente. Apen
 | 🔗 **Exec sem sobrecarga (zero-overhead)** | Perfil resolvido → env definido → `exec(2)` do binário real |
 | 🔒 **Isolamento de credenciais** | Variáveis de ambiente conflitantes (ex: `ANTHROPIC_API_KEY`) são removidas antes do exec |
 | 🔍 **Resolução automática** | Percorre até a raiz; faz fallback para `default_profile` da configuração |
+| 👤 **Inspeção de conta** | Mostra com qual conta cada CLI do perfil parece estar autenticada |
 | 🩺 **Comando doctor** | Valida a configuração, binários, estrutura do perfil e dicas de credenciais |
 | 💻 **Completions de shell** | Bash, Zsh, Fish, PowerShell e Elvish |
 | 🖥️ **Statusline do Claude** | Provisiona automaticamente um script de statusline mostrando modelo/contexto/custo |
@@ -94,6 +95,28 @@ cd ~/side-project      && claude   # ← usa o perfil "personal"
 
 # 5. Inspecione o contexto atual
 cloak profile show
+cloak profile account work
+```
+
+`cloak profile account <nome>` inspeciona cada home de CLI configurada dentro do perfil e imprime o
+melhor indício local de identidade que encontrar:
+
+- `claude`: lê `.credentials.json`; mostra email/nome quando existir e, caso contrário, informa que
+  existem credenciais e pode incluir o plano detectado.
+- `codex`: lê `auth.json`; prioriza o `id_token` decodificado e depois faz fallback para
+  `account_id` ou para uma indicação de API key.
+- `gemini`: lê `gemini/.gemini/oauth_creds.json`, `gemini/.gemini/.env` e
+  `gemini/.gemini/settings.json`.
+- outras CLIs configuradas: se o diretório do perfil não estiver vazio, o `cloak` informa que
+  existem credenciais, mas que aquela CLI ainda não tem suporte específico.
+
+Exemplo de saída:
+
+```text
+Profile 'work'
+claude -> credentials detected, but account identifier unavailable (plan: max)
+codex -> Jane Doe <jane@example.com>
+gemini -> Gem User <gem@example.com>
 ```
 
 ---
@@ -138,6 +161,9 @@ remove_env_vars = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
 Adicionar uma nova CLI é tão simples quanto adicionar um novo bloco `[cli.<nome>]`.
 Se seu config foi criado antes do suporte ao Gemini, rode `cloak doctor` e aceite o prompt opcional de migração para incluir os blocos recomendados ausentes.
 
+`cloak profile account <nome>` percorre as CLIs configuradas em `[cli.*]`, então adicionar um novo
+bloco tambem faz essa CLI aparecer na saída de inspeção de conta.
+
 ---
 
 ## Comandos
@@ -147,6 +173,7 @@ cloak exec <cli> [--profile <nome>] [args...]
                                    Resolve o perfil, define env, remove vars conflitantes, executa a CLI
 cloak use <profile>                Escreve .cloak no diretório atual
 cloak profile list                 Lista todos os perfis
+cloak profile account <nome>       Mostra qual conta cada CLI esta usando dentro de um perfil
 cloak profile create <nome>        Cria diretórios de perfil (+ template de statusline do Claude no Unix)
 cloak profile delete <nome> [-y]   Deleta um perfil
 cloak profile show                 Mostra o perfil resolvido e caminhos de env para cada CLI
@@ -170,6 +197,7 @@ Exemplo visual da feature em uso, executando a CLI com perfis isolados no moment
 
 ```text
 src/
+├── account.rs    — Helpers de inspecao de credenciais/conta por CLI
 ├── main.rs       — Ponto de entrada da CLI, despacho de comandos (clap + derive)
 ├── cli.rs        — Structs de argumentos e definições de subcomandos
 ├── config.rs     — Parsing do arquivo de configuração e padrões (serde + toml)
