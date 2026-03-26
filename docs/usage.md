@@ -43,8 +43,38 @@ cloak login gemini work
 
 # 4) Inspect current context
 cloak profile show
+cloak profile account work
 cloak doctor
 ```
+
+## Inspect authenticated accounts in a profile
+
+Use this when you want to confirm which identity was captured inside a profile after logging in:
+
+```bash
+cloak profile account work
+```
+
+Typical output:
+
+```text
+Profile 'work'
+claude -> credentials detected, but account identifier unavailable (plan: max)
+codex -> Jane Doe <jane@example.com>
+gemini -> Gem User <gem@example.com>
+```
+
+How `cloak` detects this:
+
+- `claude`: inspects `claude/.credentials.json`
+- `codex`: inspects `codex/auth.json`
+- `gemini`: inspects `gemini/.gemini/oauth_creds.json`, `gemini/.gemini/.env`, and
+  `gemini/.gemini/settings.json`
+- other configured CLIs: reports a generic "credentials detected" message when the profile
+  directory is non-empty
+
+This command only inspects local files inside `profiles/<name>/<cli>`; it does not contact any
+remote API.
 
 ## Change profile for a repository
 
