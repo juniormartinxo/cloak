@@ -45,6 +45,7 @@ No wrappers running in background. No daemons. No persistent state. Just a clean
 | 🔗 **Zero-overhead exec** | Profile resolved → env set → `exec(2)` the real binary |
 | 🔒 **Credential isolation** | Conflicting env vars (e.g. `ANTHROPIC_API_KEY`) are stripped before exec |
 | 🔍 **Automatic resolution** | Walks up to root; falls back to `default_profile` from config |
+| 👤 **Account inspection** | Shows which account each CLI profile appears to be authenticated with |
 | 🩺 **Doctor command** | Validates config, binaries, profile structure and credential hints |
 | 💻 **Shell completions** | Bash, Zsh, Fish, PowerShell and Elvish |
 | 🖥️ **Claude statusline** | Auto-provisions a statusline script showing model/context/cost |
@@ -98,6 +99,28 @@ cd ~/side-project      && claude   # ← uses "personal" profile
 
 # 5. Inspect current context
 cloak profile show
+cloak profile account work
+```
+
+`cloak profile account <name>` inspects each configured CLI home inside the profile and prints the
+best local identity hint it can find:
+
+- `claude`: reads `.credentials.json`; shows email/name when present, otherwise reports that
+  credentials exist and may include the detected plan.
+- `codex`: reads `auth.json`; prefers the decoded `id_token`, then falls back to `account_id` or an
+  API-key hint.
+- `gemini`: reads `gemini/.gemini/oauth_creds.json`, `gemini/.gemini/.env`, and
+  `gemini/.gemini/settings.json`.
+- other configured CLIs: if their profile directory is non-empty, `cloak` reports that credentials
+  exist but that the CLI is not yet specifically supported.
+
+Example output:
+
+```text
+Profile 'work'
+claude -> credentials detected, but account identifier unavailable (plan: max)
+codex -> Jane Doe <jane@example.com>
+gemini -> Gem User <gem@example.com>
 ```
 
 ---
@@ -142,6 +165,9 @@ remove_env_vars = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
 Adding a new CLI is as simple as adding a new `[cli.<name>]` block.
 If your config was created before Gemini support, run `cloak doctor` and accept the optional migration prompt to append missing recommended CLI blocks.
 
+`cloak profile account <name>` iterates over the CLIs configured under `[cli.*]`, so adding a new
+block also makes that CLI show up in account inspection output.
+
 ---
 
 ## Commands
@@ -151,6 +177,7 @@ cloak exec <cli> [--profile <name>] [args...]
                                    Resolve profile, set env, strip conflicting vars, exec CLI
 cloak use <profile>                Write .cloak in current directory
 cloak profile list                 List all profiles
+cloak profile account <name>       Show which account each CLI is using inside a profile
 cloak profile create <name>        Create profile dirs (+ Claude statusline template on Unix)
 cloak profile delete <name> [-y]   Delete a profile
 cloak profile show                 Show resolved profile and env paths for each CLI
@@ -174,6 +201,7 @@ Visual example of the feature in action, launching the CLI with isolated profile
 
 ```text
 src/
+├── account.rs    — Per-CLI credential/account inspection helpers
 ├── main.rs       — CLI entry point, command dispatch (clap + derive)
 ├── cli.rs        — Argument structs and subcommand definitions
 ├── config.rs     — Config file parsing and defaults (serde + toml)
