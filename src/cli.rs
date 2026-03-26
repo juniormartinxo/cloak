@@ -58,6 +58,9 @@ pub enum ProfileCommands {
     /// List profiles
     List,
 
+    /// Show which account(s) a profile is authenticated with
+    Account { name: String },
+
     /// Create profile directory structure
     Create { name: String },
 
@@ -82,7 +85,7 @@ pub fn command_for_completions() -> clap::Command {
 mod tests {
     use clap::Parser;
 
-    use super::{Cli, Commands};
+    use super::{Cli, Commands, ProfileCommands};
 
     #[test]
     fn test_exec_parses_forwarded_args() {
@@ -155,6 +158,16 @@ mod tests {
         match parsed.command {
             Commands::Use { profile } => assert_eq!(profile, "work"),
             _ => panic!("expected use command"),
+        }
+    }
+
+    #[test]
+    fn test_profile_account_parses_name() {
+        let parsed = Cli::parse_from(["cloak", "profile", "account", "work"]);
+
+        match parsed.command {
+            Commands::Profile(ProfileCommands::Account { name }) => assert_eq!(name, "work"),
+            _ => panic!("expected profile account command"),
         }
     }
 
