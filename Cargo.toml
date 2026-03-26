@@ -6,6 +6,7 @@ description = "LLM CLI profile manager by directory"
 license = "Apache-2.0"
 
 [dependencies]
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 toml = "0.8"
