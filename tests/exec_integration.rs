@@ -7,6 +7,8 @@ mod unix_exec_tests {
         process::Command,
     };
 
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use serde_json::json;
     use tempfile::tempdir;
 
     #[test]
@@ -282,6 +284,93 @@ mod unix_exec_tests {
         );
     }
 
+    #[test]
+    fn profile_account_shows_detected_accounts_per_cli() {
+        let tmp = tempdir().expect("tempdir");
+        let xdg_config_home = tmp.path().join("xdg");
+        let profiles_root = xdg_config_home.join("cloak").join("profiles");
+        let work_dir = profiles_root.join("work");
+
+        write_standard_config(&xdg_config_home);
+
+        fs::create_dir_all(work_dir.join("claude")).expect("create claude dir");
+        fs::create_dir_all(work_dir.join("codex")).expect("create codex dir");
+        fs::create_dir_all(work_dir.join("gemini/.gemini")).expect("create gemini dir");
+
+        fs::write(
+            work_dir.join("claude/.credentials.json"),
+            json!({
+                "claudeAiOauth": {
+                    "accessToken": "opaque-token",
+                    "subscriptionType": "max"
+                }
+            })
+            .to_string(),
+        )
+        .expect("write claude credentials");
+
+        fs::write(
+            work_dir.join("codex/auth.json"),
+            json!({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "id_token": fake_jwt(json!({
+                        "name": "Jane Doe",
+                        "email": "jane@example.com"
+                    })),
+                    "account_id": "acct_123"
+                }
+            })
+            .to_string(),
+        )
+        .expect("write codex auth");
+
+        fs::write(
+            work_dir.join("gemini/.gemini/oauth_creds.json"),
+            json!({
+                "id_token": fake_jwt(json!({
+                    "name": "Gem User",
+                    "email": "gem@example.com"
+                }))
+            })
+            .to_string(),
+        )
+        .expect("write gemini oauth");
+
+        let output = Command::new(cloak_bin())
+            .arg("profile")
+            .arg("account")
+            .arg("work")
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak profile account");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("Profile 'work'"),
+            "missing profile header:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("claude -> credentials detected, but account identifier unavailable"),
+            "missing claude output:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("codex -> Jane Doe <jane@example.com>"),
+            "missing codex identity:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("gemini -> Gem User <gem@example.com>"),
+            "missing gemini identity:\n{stdout}"
+        );
+    }
+
     fn cloak_bin() -> PathBuf {
         if let Some(path) = std::env::var_os("CARGO_BIN_EXE_cloak").map(PathBuf::from) {
             return path;
@@ -373,5 +462,34 @@ echo "ARGS=$*"
         );
 
         fs::write(cloak_dir.join("config.toml"), config).expect("write config.toml");
+    }
+
+    fn write_standard_config(xdg_config_home: &Path) {
+        let cloak_dir = xdg_config_home.join("cloak");
+        fs::create_dir_all(&cloak_dir).expect("create cloak config dir");
+
+        let config = r#"[general]
+default_profile = "personal"
+
+[cli.claude]
+binary = "claude"
+config_dir_env = "CLAUDE_CONFIG_DIR"
+
+[cli.codex]
+binary = "codex"
+config_dir_env = "CODEX_HOME"
+
+[cli.gemini]
+binary = "gemini"
+config_dir_env = "GEMINI_CLI_HOME"
+"#;
+
+        fs::write(cloak_dir.join("config.toml"), config).expect("write config.toml");
+    }
+
+    fn fake_jwt(claims: serde_json::Value) -> String {
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"none","typ":"JWT"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(claims.to_string());
+        format!("{header}.{payload}.signature")
     }
 }
