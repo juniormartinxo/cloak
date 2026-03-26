@@ -45,6 +45,31 @@ cloak login codex <profile>
 cloak login gemini <profile>
 ```
 
+## `cloak profile account <profile>` shows `not authenticated`
+
+That means `cloak` did not find any supported local credential files in that profile's CLI
+directory.
+
+Check:
+
+- whether you logged in through `cloak login <cli> <profile>` or `cloak exec <cli> --profile <profile>`
+- whether the CLI actually writes credentials inside the configured home directory
+- whether the CLI name exists under `[cli.<name>]` in `config.toml`
+
+Then re-run:
+
+```bash
+cloak profile account <profile>
+```
+
+## `cloak profile account <profile>` says the CLI is not yet supported
+
+This is the fallback for configured CLIs that have files in their profile directory but do not yet
+have parser logic in `src/account.rs`.
+
+The profile isolation still works for `cloak exec`; only the account-identification message is
+generic.
+
 ## `cloak login gemini <profile>` fails with `illegal access` (Snap)
 
 Common symptoms:
