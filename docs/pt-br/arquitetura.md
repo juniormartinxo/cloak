@@ -4,6 +4,7 @@
 
 - `src/main.rs`: entrada, dispatch dos comandos, fluxo principal.
 - `src/cli.rs`: definicao de argumentos/subcomandos (`clap`).
+- `src/account.rs`: inspecao local de arquivos de credenciais para `profile account`.
 - `src/config.rs`: leitura/criacao de `config.toml` e validacoes.
 - `src/profile.rs`: resolucao de `.cloak` e escrita do arquivo local.
 - `src/paths.rs`: paths XDG e funcoes de permissao/validacao.
@@ -24,6 +25,22 @@
 
 `main.rs` prioriza o `PWD` logico quando ele aponta para o mesmo caminho real de `current_dir()`.
 Isso preserva comportamento esperado com symlinks/worktrees.
+
+## Fluxo do comando `profile account`
+
+1. Valida o nome do perfil solicitado.
+2. Garante que `profiles/<perfil>` existe.
+3. Percorre os nomes de CLI configurados em `config.cli`.
+4. Inspeciona o diretorio home especifico de cada CLI.
+5. Imprime uma conta identificada, uma dica de presenca de credenciais ou `not authenticated`.
+
+Detectores especificos atuais:
+
+- `claude`: `.credentials.json`
+- `codex`: `auth.json` (incluindo claims JWT decodificados de `id_token`)
+- `gemini`: `gemini/.gemini/oauth_creds.json`, `gemini/.gemini/.env`,
+  `gemini/.gemini/settings.json`
+- outras CLIs: deteccao generica por diretorio nao vazio
 
 ## Seguranca
 
