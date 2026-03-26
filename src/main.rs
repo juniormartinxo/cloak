@@ -1,3 +1,4 @@
+mod account;
 mod cli;
 mod config;
 mod doctor;
@@ -17,6 +18,7 @@ use color_eyre::eyre::{eyre, Context, Result};
 use serde_json::{json, Value};
 
 use crate::{
+    account::{inspect_profile_accounts, AccountStatus},
     cli::{Cli, Commands, ProfileCommands},
     profile::{ProfileSource, ResolvedProfile},
 };
@@ -99,6 +101,9 @@ fn main() -> Result<()> {
                         println!("{}", name);
                     }
                 }
+            }
+            ProfileCommands::Account { name } => {
+                show_profile_accounts(&name, &loaded.config)?;
             }
             ProfileCommands::Create { name } => {
                 create_profile(&name, &loaded.config)?;
@@ -267,6 +272,32 @@ fn show_profile(resolved: &ResolvedProfile, cfg: &config::Config) -> Result<()> 
             cli_cfg.config_dir_env,
             display_path(&cli_dir)
         );
+    }
+
+    Ok(())
+}
+
+fn show_profile_accounts(profile: &str, cfg: &config::Config) -> Result<()> {
+    paths::validate_profile_name(profile)?;
+
+    if !profile_exists(profile)? {
+        return Err(eyre!("profile '{}' does not exist", profile));
+    }
+
+    println!("Profile '{}'", profile);
+
+    for account in inspect_profile_accounts(profile, cfg)? {
+        match account.status {
+            AccountStatus::Identified { display } => {
+                println!("{} -> {}", account.cli_name, display);
+            }
+            AccountStatus::CredentialsPresent { detail } => {
+                println!("{} -> {}", account.cli_name, detail);
+            }
+            AccountStatus::NoCredentials => {
+                println!("{} -> not authenticated", account.cli_name);
+            }
+        }
     }
 
     Ok(())
