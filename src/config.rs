@@ -26,10 +26,17 @@ pub struct GeneralConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CliConfig {
     pub binary: String,
-    pub config_dir_env: String,
+    #[serde(default)]
+    pub config_dir_env: Option<String>,
 
     #[serde(default)]
     pub remove_env_vars: Vec<String>,
+
+    #[serde(default)]
+    pub extra_env: HashMap<String, String>,
+
+    #[serde(default)]
+    pub launch_args: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
