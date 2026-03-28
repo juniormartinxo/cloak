@@ -22,10 +22,32 @@ pub fn exec_cli(cli_name: &str, profile: &str, args: &[String], config: &Config)
 
     let profile_dir = paths::profile_cli_dir(profile, cli_name)?;
     ensure_profile_cli_dir(&profile_dir, profile, cli_name)?;
+    let template_context = TemplateContext {
+        cli_name,
+        profile,
+        profile_dir: &profile_dir,
+    };
+
+    let rendered_launch_args: Vec<String> = cli_cfg
+        .launch_args
+        .iter()
+        .map(|arg| render_template(arg, &template_context))
+        .collect();
+
+    let (binary, launch_args) =
+        resolve_effective_launch(cli_name, binary, &rendered_launch_args, cli_cfg);
 
     let mut cmd = Command::new(binary);
+    cmd.args(launch_args);
     cmd.args(args);
-    cmd.env(&cli_cfg.config_dir_env, &profile_dir);
+
+    if let Some(config_dir_env) = &cli_cfg.config_dir_env {
+        cmd.env(config_dir_env, &profile_dir);
+    }
+
+    for (name, value) in &cli_cfg.extra_env {
+        cmd.env(name, render_template(value, &template_context));
+    }
 
     for var in &cli_cfg.remove_env_vars {
         cmd.env_remove(var);
@@ -42,6 +64,100 @@ pub fn exec_cli(cli_name: &str, profile: &str, args: &[String], config: &Config)
         let status = cmd.status().wrap_err("failed running child process")?;
         std::process::exit(status.code().unwrap_or(1));
     }
+}
+
+fn resolve_effective_launch(
+    cli_name: &str,
+    binary: std::path::PathBuf,
+    launch_args: &[String],
+    cli_cfg: &crate::config::CliConfig,
+) -> (std::path::PathBuf, Vec<String>) {
+    if !is_cursor_wsl_wrapper(cli_name, binary.as_path()) {
+        return (binary, launch_args.to_vec());
+    }
+
+    let has_user_data_arg = cli_cfg
+        .launch_args
+        .iter()
+        .any(|arg| arg == "--user-data-dir");
+    let has_extensions_arg = cli_cfg
+        .launch_args
+        .iter()
+        .any(|arg| arg == "--extensions-dir");
+
+    if !has_user_data_arg && !has_extensions_arg {
+        return (binary, launch_args.to_vec());
+    }
+
+    eprintln!(
+        "Warning: Cursor is running through the Windows WSL wrapper ({}). \
+Launching Cursor.exe directly with isolated --user-data-dir and without --extensions-dir so extension auth can use the cloak profile while installed extensions remain available.",
+        binary.display()
+    );
+
+    let direct_binary = resolve_cursor_windows_exe(binary.as_path()).unwrap_or(binary);
+    let filtered_args = strip_flag_with_value(launch_args, "--extensions-dir");
+
+    (direct_binary, filtered_args)
+}
+
+fn resolve_cursor_windows_exe(binary: &std::path::Path) -> Option<std::path::PathBuf> {
+    let exe_path = binary
+        .parent()?
+        .parent()?
+        .parent()?
+        .parent()?
+        .join("Cursor.exe");
+
+    Some(exe_path)
+}
+
+fn strip_flag_with_value(args: &[String], flag: &str) -> Vec<String> {
+    let mut filtered = Vec::with_capacity(args.len());
+    let mut skip_next = false;
+
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+
+        if arg == flag {
+            skip_next = true;
+            continue;
+        }
+
+        filtered.push(arg.clone());
+    }
+
+    filtered
+}
+
+fn is_cursor_wsl_wrapper(cli_name: &str, binary: &std::path::Path) -> bool {
+    if cli_name != "cursor" {
+        return false;
+    }
+
+    if std::env::var_os("WSL_DISTRO_NAME").is_none() {
+        return false;
+    }
+
+    binary.to_string_lossy().starts_with("/mnt/c/")
+}
+
+pub(crate) struct TemplateContext<'a> {
+    pub(crate) cli_name: &'a str,
+    pub(crate) profile: &'a str,
+    pub(crate) profile_dir: &'a std::path::Path,
+}
+
+pub(crate) fn render_template(template: &str, context: &TemplateContext<'_>) -> String {
+    let profile_dir = context.profile_dir.display().to_string();
+
+    template
+        .replace("{profile_dir}", &profile_dir)
+        .replace("{profile_name}", context.profile)
+        .replace("{cli_name}", context.cli_name)
 }
 
 fn ensure_profile_cli_dir(path: &std::path::Path, profile: &str, cli_name: &str) -> Result<()> {
@@ -84,4 +200,164 @@ fn _is_profile_dir_empty(path: &std::path::Path) -> Result<bool> {
     let mut entries =
         fs::read_dir(path).wrap_err_with(|| format!("failed reading {}", path.display()))?;
     Ok(entries.next().is_none())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use crate::config::CliConfig;
+
+    use super::{
+        is_cursor_wsl_wrapper, render_template, resolve_cursor_windows_exe,
+        resolve_effective_launch, strip_flag_with_value, TemplateContext,
+    };
+
+    #[test]
+    fn render_template_expands_profile_placeholders() {
+        let context = TemplateContext {
+            cli_name: "cursor",
+            profile: "work",
+            profile_dir: Path::new("/tmp/profiles/work/cursor"),
+        };
+
+        let rendered = render_template(
+            "{cli_name}:{profile_name}:{profile_dir}:{profile_dir}/extensions",
+            &context,
+        );
+
+        assert_eq!(
+            rendered,
+            "cursor:work:/tmp/profiles/work/cursor:/tmp/profiles/work/cursor/extensions"
+        );
+    }
+
+    #[test]
+    fn detects_cursor_wsl_wrapper_only_for_cursor_on_wsl_windows_path() {
+        unsafe {
+            std::env::set_var("WSL_DISTRO_NAME", "Ubuntu");
+        }
+
+        assert!(is_cursor_wsl_wrapper(
+            "cursor",
+            Path::new("/mnt/c/Users/test/AppData/Local/Programs/cursor/resources/app/bin/cursor")
+        ));
+
+        assert!(!is_cursor_wsl_wrapper(
+            "code",
+            Path::new("/mnt/c/Users/test/AppData/Local/Programs/cursor/resources/app/bin/cursor")
+        ));
+
+        assert!(!is_cursor_wsl_wrapper(
+            "cursor",
+            Path::new("/usr/bin/cursor")
+        ));
+
+        unsafe {
+            std::env::remove_var("WSL_DISTRO_NAME");
+        }
+    }
+
+    #[test]
+    fn cursor_wsl_warning_condition_depends_on_editor_isolation_args() {
+        let cfg = CliConfig {
+            binary: "cursor".to_string(),
+            config_dir_env: None,
+            remove_env_vars: vec![],
+            extra_env: Default::default(),
+            launch_args: vec![
+                "--user-data-dir".to_string(),
+                "{profile_dir}".to_string(),
+                "--new-window".to_string(),
+            ],
+        };
+
+        assert!(cfg.launch_args.iter().any(|arg| arg == "--user-data-dir"));
+        assert!(!cfg.launch_args.iter().any(|arg| arg == "--extensions-dir"));
+    }
+
+    #[test]
+    fn strips_extensions_dir_pair_but_keeps_other_args() {
+        let args = vec![
+            "--user-data-dir".to_string(),
+            "/tmp/profile".to_string(),
+            "--extensions-dir".to_string(),
+            "/tmp/profile/extensions".to_string(),
+            "--new-window".to_string(),
+        ];
+
+        assert_eq!(
+            strip_flag_with_value(&args, "--extensions-dir"),
+            vec![
+                "--user-data-dir".to_string(),
+                "/tmp/profile".to_string(),
+                "--new-window".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolves_cursor_windows_exe_from_wsl_wrapper_path() {
+        let binary =
+            Path::new("/mnt/c/Users/test/AppData/Local/Programs/cursor/resources/app/bin/cursor");
+
+        assert_eq!(
+            resolve_cursor_windows_exe(binary),
+            Some(Path::new("/mnt/c/Users/test/AppData/Local/Programs/cursor/Cursor.exe").into())
+        );
+    }
+
+    #[test]
+    fn rewrites_cursor_wsl_launch_to_drop_extensions_dir() {
+        unsafe {
+            std::env::set_var("WSL_DISTRO_NAME", "Ubuntu");
+        }
+
+        let cfg = CliConfig {
+            binary: "cursor".to_string(),
+            config_dir_env: None,
+            remove_env_vars: vec![],
+            extra_env: Default::default(),
+            launch_args: vec![
+                "--user-data-dir".to_string(),
+                "{profile_dir}".to_string(),
+                "--extensions-dir".to_string(),
+                "{profile_dir}/extensions".to_string(),
+                "--new-window".to_string(),
+            ],
+        };
+
+        let rendered_args = vec![
+            "--user-data-dir".to_string(),
+            "/tmp/profile".to_string(),
+            "--extensions-dir".to_string(),
+            "/tmp/profile/extensions".to_string(),
+            "--new-window".to_string(),
+        ];
+
+        let (binary, args) = resolve_effective_launch(
+            "cursor",
+            Path::new("/mnt/c/Users/test/AppData/Local/Programs/cursor/resources/app/bin/cursor")
+                .into(),
+            &rendered_args,
+            &cfg,
+        );
+
+        assert_eq!(
+            binary,
+            Path::new("/mnt/c/Users/test/AppData/Local/Programs/cursor/Cursor.exe")
+        );
+        assert_eq!(
+            args,
+            vec![
+                "--user-data-dir".to_string(),
+                "/tmp/profile".to_string(),
+                "--new-window".to_string(),
+            ]
+        );
+
+        unsafe {
+            std::env::remove_var("WSL_DISTRO_NAME");
+        }
+    }
 }
