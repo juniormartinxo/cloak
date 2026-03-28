@@ -104,7 +104,7 @@ fn resolve_forwarded_args(cli_name: &str, args: &[String]) -> Vec<String> {
     args.to_vec()
 }
 
-fn resolve_remote_agent_folder(
+pub(crate) fn resolve_remote_agent_folder(
     cli_name: &str,
     binary: &std::path::Path,
     profile_dir: &std::path::Path,
@@ -116,7 +116,7 @@ fn resolve_remote_agent_folder(
     Some(profile_dir.join(".cursor-server"))
 }
 
-fn is_cursor_wsl_wrapper(cli_name: &str, binary: &std::path::Path) -> bool {
+pub(crate) fn is_cursor_wsl_wrapper(cli_name: &str, binary: &std::path::Path) -> bool {
     if cli_name != "cursor" {
         return false;
     }
