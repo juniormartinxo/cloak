@@ -69,6 +69,13 @@ Ignoring option 'extensions-dir': not supported for cursor.
 
 entao o estado GUI do Cursor ainda esta caindo no perfil global do Windows.
 
+Limitacao conhecida: mesmo quando o `cloak` isola `user-data`, `extensions-dir` e
+`VSCODE_AGENT_FOLDER`, algumas extensoes ainda podem reutilizar credenciais do SecretStorage do
+editor ou do keyring do sistema. Na pratica isso significa que perfis diferentes do `cloak` nao
+garantem contas diferentes de extensao dentro da mesma instalacao do Cursor ou do VS Code. Trate
+multi-conta da extensao Codex como um fluxo nao suportado, a menos que isso seja comprovado no seu
+ambiente.
+
 ## `doctor` mostra "no credential file detected"
 
 Isso normalmente significa que voce ainda nao autenticou nesse perfil.
