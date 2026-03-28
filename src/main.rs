@@ -109,7 +109,7 @@ fn main() -> Result<()> {
                 create_profile(&name, &loaded.config)?;
             }
             ProfileCommands::Delete { name, yes } => {
-                delete_profile(&name, yes)?;
+                delete_profile(&name, yes, &loaded)?;
             }
             ProfileCommands::Show => {
                 let cwd = current_dir()?;
@@ -224,7 +224,7 @@ fn create_profile(name: &str, cfg: &config::Config) -> Result<()> {
     Ok(())
 }
 
-fn delete_profile(name: &str, yes: bool) -> Result<()> {
+fn delete_profile(name: &str, yes: bool, loaded: &config::LoadedConfig) -> Result<()> {
     paths::validate_profile_name(name)?;
 
     let profile_dir = paths::profile_dir(name)?;
@@ -243,11 +243,68 @@ fn delete_profile(name: &str, yes: bool) -> Result<()> {
         return Ok(());
     }
 
+    let is_default = loaded.config.general.default_profile == name;
+
+    if is_default {
+        let all = list_profiles()?;
+        let remaining: Vec<String> = all.into_iter().filter(|n| n != name).collect();
+
+        if !remaining.is_empty() {
+            let new_default = if yes || !is_interactive_terminal() {
+                remaining[0].clone()
+            } else {
+                pick_new_default_profile(&remaining)?
+            };
+
+            config::update_default_profile(&loaded.path, &new_default)?;
+            println!(
+                "Default profile updated: '{}' -> '{}'",
+                name, new_default
+            );
+        } else {
+            println!(
+                "Warning: '{}' is your default profile and no other profiles exist.",
+                name
+            );
+            println!(
+                "  After deletion, create a new profile and update default_profile in {}",
+                display_path(&loaded.path)
+            );
+        }
+    }
+
     fs::remove_dir_all(&profile_dir)
         .wrap_err_with(|| format!("failed deleting {}", profile_dir.display()))?;
 
     println!("Profile '{}' deleted", name);
+    println!(
+        "Note: .cloak files in project directories may still reference '{}'.",
+        name
+    );
+    println!("  Run `cloak use <profile>` in those directories to update them.");
     Ok(())
+}
+
+fn pick_new_default_profile(remaining: &[String]) -> Result<String> {
+    println!("Choose a new default profile:");
+    for (i, name) in remaining.iter().enumerate() {
+        println!("  [{}] {}", i + 1, name);
+    }
+    print!("Enter number (1-{}): ", remaining.len());
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let choice: usize = input
+        .trim()
+        .parse()
+        .map_err(|_| eyre!("invalid selection"))?;
+
+    if choice < 1 || choice > remaining.len() {
+        return Err(eyre!("selection out of range"));
+    }
+
+    Ok(remaining[choice - 1].clone())
 }
 
 fn show_profile(resolved: &ResolvedProfile, cfg: &config::Config) -> Result<()> {
@@ -292,6 +349,18 @@ fn show_profile(resolved: &ResolvedProfile, cfg: &config::Config) -> Result<()> 
                         profile_dir: &cli_dir,
                     },
                 )
+            );
+        }
+
+        let resolved_binary =
+            which::which(&cli_cfg.binary).unwrap_or_else(|_| std::path::PathBuf::from(&cli_cfg.binary));
+        if let Some(agent_folder) =
+            exec::resolve_remote_agent_folder(cli_name, &resolved_binary, &cli_dir)
+        {
+            println!(
+                "{} -> VSCODE_AGENT_FOLDER={}",
+                cli_name,
+                display_path(&agent_folder)
             );
         }
 
