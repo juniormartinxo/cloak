@@ -33,6 +33,40 @@ cloak profile show
 
 Cheque se existe um `.cloak` em diretorio pai que esta ganhando prioridade.
 
+## Editor abre com a conta errada de vez em quando
+
+Isso normalmente acontece com apps GUI como VS Code ou Cursor quando a CLI reaproveita uma
+instancia ja aberta, que estava autenticada em outra conta.
+
+Configure o editor com isolamento por perfil no launch:
+
+```toml
+[cli.cursor]
+binary = "cursor"
+launch_args = ["--user-data-dir", "{profile_dir}", "--extensions-dir", "{profile_dir}/extensions", "--new-window"]
+
+[cli.cursor.extra_env]
+CURSOR_USER_DATA_DIR = "{profile_dir}"
+CURSOR_EXTENSIONS_DIR = "{profile_dir}/extensions"
+```
+
+No VS Code, use o mesmo padrao de `launch_args` com `binary = "code"`.
+
+No WSL, se `cursor` resolver para o wrapper do Windows
+(`/mnt/c/.../cursor/resources/app/bin/cursor`), o `cloak` agora tenta abrir o `Cursor.exe`
+diretamente. Nesse modo ele mantem `--user-data-dir` para isolar o perfil e remove
+`--extensions-dir`, para as extensoes instaladas continuarem disponiveis enquanto o
+`User/globalStorage` vai para o diretorio do perfil.
+
+Se por algum motivo o `Cursor.exe` nao puder ser aberto diretamente, e ainda aparecer algo como:
+
+```text
+Ignoring option 'user-data-dir': not supported for cursor.
+Ignoring option 'extensions-dir': not supported for cursor.
+```
+
+entao o estado GUI do Cursor ainda esta caindo no perfil global do Windows.
+
 ## `doctor` mostra "no credential file detected"
 
 Isso normalmente significa que voce ainda nao autenticou nesse perfil.
