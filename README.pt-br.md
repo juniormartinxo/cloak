@@ -186,10 +186,10 @@ Esse padrao e importante para editores estilo VS Code/Cursor porque uma instanci
 pode manter outra conta logada mesmo quando o `.cloak` resolve o perfil correto.
 
 No WSL com o wrapper Windows do `cursor` (`/mnt/c/.../cursor/resources/app/bin/cursor`), o
-`cloak` agora tenta abrir o `Cursor.exe` diretamente e manter apenas `--user-data-dir`. Isso
-preserva as extensoes instaladas do perfil normal do Windows enquanto move o
-`User/globalStorage` para o diretorio do perfil do `cloak`, que e a parte relevante para separar o
-login da extensao Codex.
+`cloak` continua usando o wrapper normal para que o fluxo de abertura siga igual ao `cursor .` e
+passe pela integracao Remote WSL. Nesse modo ele tambem define um `VSCODE_AGENT_FOLDER` por
+perfil, isolando por perfil o estado remoto do servidor (que por padrao fica em
+`~/.cursor-server`).
 
 ---
 
