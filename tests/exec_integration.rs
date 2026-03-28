@@ -146,6 +146,68 @@ mod unix_exec_tests {
     }
 
     #[test]
+    fn exec_applies_templated_launch_args_and_extra_env() {
+        let tmp = tempdir().expect("tempdir");
+        let bin_dir = tmp.path().join("bin");
+        let repo = tmp.path().join("repo-cursor");
+        let xdg_config_home = tmp.path().join("xdg");
+
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+        fs::create_dir_all(&repo).expect("create repo dir");
+
+        let mock_binary = create_mock_binary(&bin_dir);
+        write_editor_config(&xdg_config_home, &mock_binary, "personal");
+        fs::write(repo.join(".cloak"), "profile = \"work\"\n").expect("write .cloak");
+
+        let output = Command::new(cloak_bin())
+            .arg("exec")
+            .arg("cursor")
+            .arg("--")
+            .arg("repo-cursor")
+            .current_dir(&repo)
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak exec");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let expected_profile_home = xdg_config_home
+            .join("cloak")
+            .join("profiles")
+            .join("work")
+            .join("cursor");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!(
+                "CURSOR_USER_DATA_DIR={}",
+                expected_profile_home.display()
+            )),
+            "missing CURSOR_USER_DATA_DIR in stdout:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!(
+                "CURSOR_EXTENSIONS_DIR={}/extensions",
+                expected_profile_home.display()
+            )),
+            "missing CURSOR_EXTENSIONS_DIR in stdout:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!(
+                "ARGS=--user-data-dir {} --extensions-dir {}/extensions --new-window repo-cursor",
+                expected_profile_home.display(),
+                expected_profile_home.display()
+            )),
+            "launch args were not rendered as expected:\n{stdout}"
+        );
+    }
+
+    #[test]
     fn exec_explicit_profile_overrides_directory_resolution() {
         let tmp = tempdir().expect("tempdir");
         let bin_dir = tmp.path().join("bin");
@@ -411,6 +473,8 @@ mod unix_exec_tests {
         let script = r#"#!/bin/sh
 echo "MOCK_HOME=$MOCK_HOME"
 echo "GEMINI_CLI_HOME=$GEMINI_CLI_HOME"
+echo "CURSOR_USER_DATA_DIR=$CURSOR_USER_DATA_DIR"
+echo "CURSOR_EXTENSIONS_DIR=$CURSOR_EXTENSIONS_DIR"
 if [ -z "${OPENAI_API_KEY+x}" ]; then
   echo "OPENAI_API_KEY=<unset>"
 else
@@ -457,6 +521,19 @@ echo "ARGS=$*"
 
         let config = format!(
             "[general]\ndefault_profile = \"{}\"\n\n[cli.gemini]\nbinary = \"{}\"\nconfig_dir_env = \"GEMINI_CLI_HOME\"\nremove_env_vars = [\"GEMINI_API_KEY\", \"GOOGLE_API_KEY\"]\n",
+            default_profile,
+            mock_binary.display()
+        );
+
+        fs::write(cloak_dir.join("config.toml"), config).expect("write config.toml");
+    }
+
+    fn write_editor_config(xdg_config_home: &Path, mock_binary: &Path, default_profile: &str) {
+        let cloak_dir = xdg_config_home.join("cloak");
+        fs::create_dir_all(&cloak_dir).expect("create cloak config dir");
+
+        let config = format!(
+            "[general]\ndefault_profile = \"{}\"\n\n[cli.cursor]\nbinary = \"{}\"\nremove_env_vars = [\"OPENAI_API_KEY\"]\nlaunch_args = [\"--user-data-dir\", \"{{profile_dir}}\", \"--extensions-dir\", \"{{profile_dir}}/extensions\", \"--new-window\"]\n\n[cli.cursor.extra_env]\nCURSOR_USER_DATA_DIR = \"{{profile_dir}}\"\nCURSOR_EXTENSIONS_DIR = \"{{profile_dir}}/extensions\"\n",
             default_profile,
             mock_binary.display()
         );
