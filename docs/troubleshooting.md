@@ -69,6 +69,12 @@ Ignoring option 'extensions-dir': not supported for cursor.
 
 then the Cursor GUI state is still falling back to the global Windows profile.
 
+Known limitation: even when `cloak` isolates `user-data`, `extensions-dir`, and
+`VSCODE_AGENT_FOLDER`, some extensions may still reuse credentials from the editor's
+SecretStorage or the OS keyring. In practice this means separate `cloak` profiles do not guarantee
+separate extension accounts inside the same Cursor or VS Code installation. Treat Codex extension
+multi-account setups as unsupported unless proven otherwise in your environment.
+
 ## `doctor` shows `no credential file detected`
 
 Usually this means you have not authenticated in that profile yet.
