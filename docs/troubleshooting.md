@@ -38,6 +38,10 @@ Check whether a parent directory contains a `.cloak` that is taking priority.
 This usually happens with GUI apps like VS Code or Cursor when their CLI reuses an existing app
 instance that was already logged into another account.
 
+When `cloak exec cursor ...` is run from an interactive terminal, `cloak` now launches Cursor as a
+detached child process instead of replacing the shell process with `exec(2)`. That prevents the
+terminal from staying blocked until the editor window closes.
+
 Configure the editor with per-profile launch isolation:
 
 ```toml
