@@ -189,9 +189,9 @@ That pattern is important for VS Code/Cursor-style editors because a reused GUI 
 different logged-in account even when `.cloak` resolves the right profile.
 
 On WSL with the Windows `cursor` wrapper (`/mnt/c/.../cursor/resources/app/bin/cursor`), `cloak`
-now attempts to launch `Cursor.exe` directly and keeps only `--user-data-dir`. This preserves the
-installed extensions from the normal Windows profile while moving `User/globalStorage` into the
-`cloak` profile directory, which is the relevant piece for Codex extension auth separation.
+keeps using the normal wrapper so the launch flow still matches `cursor .` and goes through
+Remote WSL integration. In that mode it also sets a profile-specific `VSCODE_AGENT_FOLDER`, which
+isolates the remote server state (`~/.cursor-server` by default) per `cloak` profile.
 
 ---
 
