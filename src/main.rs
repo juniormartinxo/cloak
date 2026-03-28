@@ -266,12 +266,53 @@ fn show_profile(resolved: &ResolvedProfile, cfg: &config::Config) -> Result<()> 
     for cli_name in cli_names {
         let cli_cfg = &cfg.cli[cli_name];
         let cli_dir = paths::profile_cli_dir(&resolved.name, cli_name)?;
-        println!(
-            "{} -> {}={}",
-            cli_name,
-            cli_cfg.config_dir_env,
-            display_path(&cli_dir)
-        );
+        println!("{} -> profile_dir={}", cli_name, display_path(&cli_dir));
+
+        if let Some(config_dir_env) = &cli_cfg.config_dir_env {
+            println!(
+                "{} -> {}={}",
+                cli_name,
+                config_dir_env,
+                display_path(&cli_dir)
+            );
+        }
+
+        let mut extra_env: Vec<_> = cli_cfg.extra_env.iter().collect();
+        extra_env.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, value) in extra_env {
+            println!(
+                "{} -> {}={}",
+                cli_name,
+                name,
+                exec::render_template(
+                    value,
+                    &exec::TemplateContext {
+                        cli_name,
+                        profile: &resolved.name,
+                        profile_dir: &cli_dir,
+                    },
+                )
+            );
+        }
+
+        if !cli_cfg.launch_args.is_empty() {
+            let rendered_args = cli_cfg
+                .launch_args
+                .iter()
+                .map(|arg| {
+                    exec::render_template(
+                        arg,
+                        &exec::TemplateContext {
+                            cli_name,
+                            profile: &resolved.name,
+                            profile_dir: &cli_dir,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            println!("{} -> launch_args={}", cli_name, rendered_args);
+        }
     }
 
     Ok(())
@@ -565,8 +606,10 @@ mod tests {
             "claude".to_string(),
             CliConfig {
                 binary: "claude".to_string(),
-                config_dir_env: "CLAUDE_CONFIG_DIR".to_string(),
+                config_dir_env: Some("CLAUDE_CONFIG_DIR".to_string()),
                 remove_env_vars: vec![],
+                extra_env: Default::default(),
+                launch_args: vec![],
             },
         );
 
@@ -608,8 +651,10 @@ mod tests {
             "claude".to_string(),
             CliConfig {
                 binary: "claude".to_string(),
-                config_dir_env: "CLAUDE_CONFIG_DIR".to_string(),
+                config_dir_env: Some("CLAUDE_CONFIG_DIR".to_string()),
                 remove_env_vars: vec![],
+                extra_env: Default::default(),
+                launch_args: vec![],
             },
         );
 
