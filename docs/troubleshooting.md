@@ -33,6 +33,40 @@ cloak profile show
 
 Check whether a parent directory contains a `.cloak` that is taking priority.
 
+## Editor opens with the wrong account intermittently
+
+This usually happens with GUI apps like VS Code or Cursor when their CLI reuses an existing app
+instance that was already logged into another account.
+
+Configure the editor with per-profile launch isolation:
+
+```toml
+[cli.cursor]
+binary = "cursor"
+launch_args = ["--user-data-dir", "{profile_dir}", "--extensions-dir", "{profile_dir}/extensions", "--new-window"]
+
+[cli.cursor.extra_env]
+CURSOR_USER_DATA_DIR = "{profile_dir}"
+CURSOR_EXTENSIONS_DIR = "{profile_dir}/extensions"
+```
+
+For VS Code, use the same `launch_args` pattern with `binary = "code"`.
+
+On WSL, if `cursor` resolves to the Windows wrapper path
+(`/mnt/c/.../cursor/resources/app/bin/cursor`), `cloak` now tries to launch `Cursor.exe` directly
+instead. In that mode it keeps `--user-data-dir` for profile isolation and drops
+`--extensions-dir`, so installed extensions remain available while `User/globalStorage` moves into
+the profile-specific directory.
+
+If `Cursor.exe` cannot be launched directly for some reason, and you still see:
+
+```text
+Ignoring option 'user-data-dir': not supported for cursor.
+Ignoring option 'extensions-dir': not supported for cursor.
+```
+
+then the Cursor GUI state is still falling back to the global Windows profile.
+
 ## `doctor` shows `no credential file detected`
 
 Usually this means you have not authenticated in that profile yet.
