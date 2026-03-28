@@ -208,6 +208,52 @@ mod unix_exec_tests {
     }
 
     #[test]
+    fn exec_cursor_defaults_to_current_directory_when_no_target_is_forwarded() {
+        let tmp = tempdir().expect("tempdir");
+        let bin_dir = tmp.path().join("bin");
+        let repo = tmp.path().join("repo-cursor-default-dir");
+        let xdg_config_home = tmp.path().join("xdg");
+
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+        fs::create_dir_all(&repo).expect("create repo dir");
+
+        let mock_binary = create_mock_binary(&bin_dir);
+        write_editor_config(&xdg_config_home, &mock_binary, "personal");
+        fs::write(repo.join(".cloak"), "profile = \"work\"\n").expect("write .cloak");
+
+        let output = Command::new(cloak_bin())
+            .arg("exec")
+            .arg("cursor")
+            .current_dir(&repo)
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak exec");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let expected_profile_home = xdg_config_home
+            .join("cloak")
+            .join("profiles")
+            .join("work")
+            .join("cursor");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!(
+                "ARGS=--user-data-dir {} --extensions-dir {}/extensions --new-window .",
+                expected_profile_home.display(),
+                expected_profile_home.display()
+            )),
+            "cursor should default to current directory when no target is passed:\n{stdout}"
+        );
+    }
+
+    #[test]
     fn exec_explicit_profile_overrides_directory_resolution() {
         let tmp = tempdir().expect("tempdir");
         let bin_dir = tmp.path().join("bin");
