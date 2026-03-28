@@ -78,6 +78,37 @@ It will also appear in `cloak profile account <name>`. For CLIs without dedicate
 the command falls back to a generic "credentials detected" message when the profile directory is
 non-empty.
 
+## Advanced launch config
+
+`config_dir_env` is optional. You can also define:
+
+- `launch_args`: arguments prepended before forwarded CLI args
+- `[cli.<name>.extra_env]`: extra environment variables to inject
+
+Supported placeholders:
+
+- `{profile_dir}`
+- `{profile_name}`
+- `{cli_name}`
+
+Example for VS Code/Cursor-style editors:
+
+```toml
+[cli.cursor]
+binary = "cursor"
+launch_args = ["--user-data-dir", "{profile_dir}", "--extensions-dir", "{profile_dir}/extensions", "--new-window"]
+
+[cli.cursor.extra_env]
+CURSOR_USER_DATA_DIR = "{profile_dir}"
+CURSOR_EXTENSIONS_DIR = "{profile_dir}/extensions"
+
+[cli.vscode]
+binary = "code"
+launch_args = ["--user-data-dir", "{profile_dir}", "--extensions-dir", "{profile_dir}/extensions", "--new-window"]
+```
+
+This avoids reusing a GUI instance that is already logged into a different account.
+
 ## Optional migration for existing configs
 
 If your `config.toml` existed before a new recommended CLI block (for example `gemini`), run:
