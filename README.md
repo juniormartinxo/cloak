@@ -168,6 +168,31 @@ If your config was created before Gemini support, run `cloak doctor` and accept 
 `cloak profile account <name>` iterates over the CLIs configured under `[cli.*]`, so adding a new
 block also makes that CLI show up in account inspection output.
 
+For editor-style apps, `config_dir_env` is optional. You can also prepend launch arguments and set
+extra environment variables with `{profile_dir}`, `{profile_name}`, and `{cli_name}` placeholders:
+
+```toml
+[cli.cursor]
+binary = "cursor"
+launch_args = ["--user-data-dir", "{profile_dir}", "--extensions-dir", "{profile_dir}/extensions", "--new-window"]
+
+[cli.cursor.extra_env]
+CURSOR_USER_DATA_DIR = "{profile_dir}"
+CURSOR_EXTENSIONS_DIR = "{profile_dir}/extensions"
+
+[cli.vscode]
+binary = "code"
+launch_args = ["--user-data-dir", "{profile_dir}", "--extensions-dir", "{profile_dir}/extensions", "--new-window"]
+```
+
+That pattern is important for VS Code/Cursor-style editors because a reused GUI instance can keep a
+different logged-in account even when `.cloak` resolves the right profile.
+
+On WSL with the Windows `cursor` wrapper (`/mnt/c/.../cursor/resources/app/bin/cursor`), `cloak`
+now attempts to launch `Cursor.exe` directly and keeps only `--user-data-dir`. This preserves the
+installed extensions from the normal Windows profile while moving `User/globalStorage` into the
+`cloak` profile directory, which is the relevant piece for Codex extension auth separation.
+
 ---
 
 ## Commands
