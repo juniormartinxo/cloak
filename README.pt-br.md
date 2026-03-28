@@ -191,6 +191,12 @@ passe pela integracao Remote WSL. Nesse modo ele tambem define um `VSCODE_AGENT_
 perfil, isolando por perfil o estado remoto do servidor (que por padrao fica em
 `~/.cursor-server`).
 
+Limitacao conhecida: isso melhora o isolamento de estado em editores estilo Cursor/VS Code, mas
+nao garante logins separados de extensao por perfil do `cloak`. Algumas extensoes, incluindo o
+Codex, tambem podem usar o SecretStorage do editor ou o keyring/credential store do sistema. Quando
+isso acontece, isolar `user-data`, `extensions-dir` e `VSCODE_AGENT_FOLDER` pode ainda nao ser
+suficiente para manter contas diferentes separadas dentro da mesma instalacao do editor.
+
 ---
 
 ## Comandos
