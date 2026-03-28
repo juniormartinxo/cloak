@@ -1,4 +1,8 @@
-use std::{fs, process::Command};
+use std::{
+    fs,
+    io::{stdin, stderr, stdout, IsTerminal},
+    process::{Command, Stdio},
+};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -51,6 +55,14 @@ pub fn exec_cli(cli_name: &str, profile: &str, args: &[String], config: &Config)
 
     for var in &cli_cfg.remove_env_vars {
         cmd.env_remove(var);
+    }
+
+    if should_launch_detached(cli_name) {
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
+        cmd.spawn().wrap_err("failed launching detached child process")?;
+        return Ok(());
     }
 
     #[cfg(unix)]
@@ -145,6 +157,14 @@ fn is_cursor_wsl_wrapper(cli_name: &str, binary: &std::path::Path) -> bool {
     binary.to_string_lossy().starts_with("/mnt/c/")
 }
 
+fn should_launch_detached(cli_name: &str) -> bool {
+    matches!(cli_name, "cursor") && is_interactive_terminal()
+}
+
+fn is_interactive_terminal() -> bool {
+    stdin().is_terminal() || stdout().is_terminal() || stderr().is_terminal()
+}
+
 pub(crate) struct TemplateContext<'a> {
     pub(crate) cli_name: &'a str,
     pub(crate) profile: &'a str,
@@ -209,8 +229,9 @@ mod tests {
     use crate::config::CliConfig;
 
     use super::{
-        is_cursor_wsl_wrapper, render_template, resolve_cursor_windows_exe,
-        resolve_effective_launch, strip_flag_with_value, TemplateContext,
+        is_cursor_wsl_wrapper, is_interactive_terminal, render_template,
+        resolve_cursor_windows_exe, resolve_effective_launch, should_launch_detached,
+        strip_flag_with_value, TemplateContext,
     };
 
     #[test]
@@ -359,5 +380,11 @@ mod tests {
         unsafe {
             std::env::remove_var("WSL_DISTRO_NAME");
         }
+    }
+
+    #[test]
+    fn launches_cursor_detached_only_for_interactive_terminal_flow() {
+        assert!(should_launch_detached("cursor") == is_interactive_terminal());
+        assert!(!should_launch_detached("codex"));
     }
 }
