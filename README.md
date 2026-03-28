@@ -193,6 +193,12 @@ keeps using the normal wrapper so the launch flow still matches `cursor .` and g
 Remote WSL integration. In that mode it also sets a profile-specific `VSCODE_AGENT_FOLDER`, which
 isolates the remote server state (`~/.cursor-server` by default) per `cloak` profile.
 
+Known limitation: this improves state isolation for Cursor/VS Code-style editors, but it does not
+guarantee separate extension logins per `cloak` profile. Some extensions, including Codex, may also
+use the editor's SecretStorage or the OS keyring/credential store. When that happens, `user-data`,
+`extensions-dir`, and `VSCODE_AGENT_FOLDER` isolation may still be insufficient to keep different
+accounts separated inside the same editor installation.
+
 ---
 
 ## Commands
