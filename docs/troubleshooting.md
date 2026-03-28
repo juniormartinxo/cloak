@@ -56,13 +56,11 @@ CURSOR_EXTENSIONS_DIR = "{profile_dir}/extensions"
 
 For VS Code, use the same `launch_args` pattern with `binary = "code"`.
 
-On WSL, if `cursor` resolves to the Windows wrapper path
-(`/mnt/c/.../cursor/resources/app/bin/cursor`), `cloak` now tries to launch `Cursor.exe` directly
-instead. In that mode it keeps `--user-data-dir` for profile isolation and drops
-`--extensions-dir`, so installed extensions remain available while `User/globalStorage` moves into
-the profile-specific directory.
-
-If `Cursor.exe` cannot be launched directly for some reason, and you still see:
+On WSL, `cloak` now keeps using the normal `cursor` wrapper path
+(`/mnt/c/.../cursor/resources/app/bin/cursor`) so the launch flow matches `cursor .` and still goes
+through Cursor's Remote WSL integration. In that mode `cloak` also sets a profile-specific
+`VSCODE_AGENT_FOLDER`, so the remote server state (including `globalStorage`) does not collapse back
+into `~/.cursor-server`. If you still see:
 
 ```text
 Ignoring option 'user-data-dir': not supported for cursor.
