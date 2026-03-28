@@ -137,6 +137,39 @@ pub fn append_default_cli_blocks(config_path: &Path, cli_names: &[String]) -> Re
     Ok(appended)
 }
 
+pub fn update_default_profile(config_path: &Path, new_default: &str) -> Result<()> {
+    paths::validate_profile_name(new_default)?;
+
+    let raw = fs::read_to_string(config_path)
+        .wrap_err_with(|| format!("failed reading {}", config_path.display()))?;
+
+    let mut updated = String::new();
+    let mut found = false;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("default_profile") && trimmed.contains('=') && !found {
+            updated.push_str(&format!("default_profile = \"{}\"", new_default));
+            found = true;
+        } else {
+            updated.push_str(line);
+        }
+        updated.push('\n');
+    }
+
+    if !found {
+        return Err(eyre!("could not find default_profile in config file"));
+    }
+
+    fs::write(config_path, &updated)
+        .wrap_err_with(|| format!("failed writing {}", config_path.display()))?;
+    paths::set_owner_only_file(config_path)?;
+
+    // Re-parse to validate the updated file.
+    let _ = load_config_from_path(config_path)?;
+
+    Ok(())
+}
+
 fn default_cli_block(cli_name: &str) -> Option<&'static str> {
     match cli_name {
         "claude" => Some(DEFAULT_CLAUDE_BLOCK),
@@ -216,7 +249,7 @@ mod tests {
 
     use super::{
         append_default_cli_blocks, load_config_from_path, missing_recommended_cli_names,
-        parse_config_str, DEFAULT_CONFIG_TOML,
+        parse_config_str, update_default_profile, DEFAULT_CONFIG_TOML,
     };
 
     #[test]
@@ -324,5 +357,62 @@ config_dir_env = "CODEX_HOME"
 
         let reloaded = load_config_from_path(&config_path).expect("reload config");
         assert!(reloaded.cli.contains_key("gemini"));
+    }
+
+    #[test]
+    fn test_update_default_profile_changes_value() {
+        let tmp = tempdir().expect("tempdir");
+        let config_path = tmp.path().join("config.toml");
+        let base = r#"[general]
+default_profile = "personal"
+
+[cli.claude]
+binary = "claude"
+config_dir_env = "CLAUDE_CONFIG_DIR"
+"#;
+        fs::write(&config_path, base).expect("write config");
+
+        update_default_profile(&config_path, "work").expect("update default");
+
+        let reloaded = load_config_from_path(&config_path).expect("reload config");
+        assert_eq!(reloaded.general.default_profile, "work");
+    }
+
+    #[test]
+    fn test_update_default_profile_preserves_other_content() {
+        let tmp = tempdir().expect("tempdir");
+        let config_path = tmp.path().join("config.toml");
+        let base = r#"[general]
+default_profile = "personal"
+
+[cli.claude]
+binary = "claude"
+config_dir_env = "CLAUDE_CONFIG_DIR"
+
+[cli.codex]
+binary = "codex"
+config_dir_env = "CODEX_HOME"
+"#;
+        fs::write(&config_path, base).expect("write config");
+
+        update_default_profile(&config_path, "work").expect("update default");
+
+        let reloaded = load_config_from_path(&config_path).expect("reload config");
+        assert_eq!(reloaded.general.default_profile, "work");
+        assert!(reloaded.cli.contains_key("claude"));
+        assert!(reloaded.cli.contains_key("codex"));
+    }
+
+    #[test]
+    fn test_update_default_profile_rejects_invalid_name() {
+        let tmp = tempdir().expect("tempdir");
+        let config_path = tmp.path().join("config.toml");
+        fs::write(&config_path, DEFAULT_CONFIG_TOML).expect("write config");
+
+        let err = update_default_profile(&config_path, "../bad").expect_err("must fail");
+        assert!(
+            err.to_string().contains("path separators"),
+            "unexpected error: {err}"
+        );
     }
 }
