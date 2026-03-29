@@ -1,56 +1,201 @@
 use std::{
     fs,
+    io::{self, IsTerminal},
     path::{Path, PathBuf},
 };
 
 use color_eyre::eyre::{Context, Result};
+use comfy_table::{
+    modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL_CONDENSED, Cell, ContentArrangement, Table,
+};
 use owo_colors::OwoColorize;
 use serde_json::Value;
 
 use crate::{config::Config, paths};
 
+struct BinarySummary {
+    configured: usize,
+    found: usize,
+    missing: usize,
+}
+
+struct ProfileSummary {
+    profiles: usize,
+    cli_dirs_present: usize,
+    cli_dirs_missing: usize,
+    credentials_detected: usize,
+    credentials_missing: usize,
+}
+
 pub fn run_doctor(config: &Config, config_path: &Path, config_created: bool) -> Result<()> {
+    println!("{}", format_main_heading("Doctor"));
     if config_created {
-        println!(
-            "{} Config: {} (created with defaults)",
-            ok_mark(),
-            config_path.display()
+        print_detail_line(
+            "Config",
+            &format!("{} (created with defaults)", config_path.display()),
         );
     } else {
-        println!("{} Config: {}", ok_mark(), config_path.display());
+        print_detail_line("Config", &config_path.display().to_string());
     }
 
-    check_binaries(config);
-    check_profiles(config)?;
+    let binary_summary = check_binaries(config);
+    let profile_summary = check_profiles(config)?;
+
+    println!();
+    println!("{}", format_section_title("Summary"));
+    print_detail_line("CLI blocks", &binary_summary.configured.to_string());
+    print_detail_line(
+        "Binaries",
+        &format!(
+            "{} found, {} missing",
+            binary_summary.found, binary_summary.missing
+        ),
+    );
+    print_detail_line("Profiles", &profile_summary.profiles.to_string());
+    print_detail_line(
+        "CLI dirs",
+        &format!(
+            "{} present, {} missing",
+            profile_summary.cli_dirs_present, profile_summary.cli_dirs_missing
+        ),
+    );
+    print_detail_line(
+        "Credentials",
+        &format!(
+            "{} detected, {} missing",
+            profile_summary.credentials_detected, profile_summary.credentials_missing
+        ),
+    );
+
+    println!();
+    println!("{}", format_section_title("Binaries"));
+    print_binaries_table(config);
+    println!();
+    println!("{}", format_section_title("Profiles"));
+    print_profiles_table(config)?;
 
     Ok(())
 }
 
-fn check_binaries(config: &Config) {
+fn check_binaries(config: &Config) -> BinarySummary {
     let mut cli_names: Vec<&String> = config.cli.keys().collect();
     cli_names.sort();
+    let mut found = 0usize;
+    let mut missing = 0usize;
 
     for cli_name in cli_names {
         let cli_cfg = &config.cli[cli_name];
         match which::which(&cli_cfg.binary) {
-            Ok(path) => println!("{} {} found at {}", ok_mark(), cli_name, path.display()),
-            Err(_) => println!(
-                "{} {} binary '{}' not found in PATH",
-                err_mark(),
-                cli_name,
-                cli_cfg.binary
-            ),
-        }
+            Ok(_) => found += 1,
+            Err(_) => missing += 1,
+        };
+    }
+
+    BinarySummary {
+        configured: found + missing,
+        found,
+        missing,
     }
 }
 
-fn check_profiles(config: &Config) -> Result<()> {
+fn print_binaries_table(config: &Config) {
+    let mut cli_names: Vec<&String> = config.cli.keys().collect();
+    cli_names.sort();
+    let mut table = new_ui_table(vec!["CLI", "Binary", "Status", "Location"]);
+
+    for cli_name in cli_names {
+        let cli_cfg = &config.cli[cli_name];
+        match which::which(&cli_cfg.binary) {
+            Ok(path) => {
+                table.add_row(vec![
+                    Cell::new(format_cli_label(cli_name)),
+                    Cell::new(&cli_cfg.binary),
+                    Cell::new("found"),
+                    Cell::new(path.display().to_string()),
+                ]);
+            }
+            Err(_) => {
+                table.add_row(vec![
+                    Cell::new(format_cli_label(cli_name)),
+                    Cell::new(&cli_cfg.binary),
+                    Cell::new("missing"),
+                    Cell::new("not found in PATH"),
+                ]);
+            }
+        };
+    }
+
+    println!("{table}");
+}
+
+fn check_profiles(config: &Config) -> Result<ProfileSummary> {
     let profiles_root = paths::profiles_dir()?;
 
     if !profiles_root.exists() {
-        println!(
-            "{} No profiles found. Run: cloak profile create <name>",
-            err_mark()
+        return Ok(ProfileSummary {
+            profiles: 0,
+            cli_dirs_present: 0,
+            cli_dirs_missing: 0,
+            credentials_detected: 0,
+            credentials_missing: 0,
+        });
+    }
+
+    let mut profile_dirs = collect_dirs(&profiles_root)?;
+    profile_dirs.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+    if profile_dirs.is_empty() {
+        return Ok(ProfileSummary {
+            profiles: 0,
+            cli_dirs_present: 0,
+            cli_dirs_missing: 0,
+            credentials_detected: 0,
+            credentials_missing: 0,
+        });
+    }
+
+    let mut cli_dirs_present = 0usize;
+    let mut cli_dirs_missing = 0usize;
+    let mut credentials_detected = 0usize;
+    let mut credentials_missing = 0usize;
+
+    for profile_dir in profile_dirs {
+        let mut cli_names: Vec<&String> = config.cli.keys().collect();
+        cli_names.sort();
+
+        for cli_name in cli_names {
+            let cli_dir = profile_dir.join(cli_name);
+            if !cli_dir.exists() {
+                cli_dirs_missing += 1;
+                continue;
+            }
+
+            cli_dirs_present += 1;
+
+            if has_credentials_hint(cli_name, &cli_dir)? {
+                credentials_detected += 1;
+            } else {
+                credentials_missing += 1;
+            }
+        }
+    }
+
+    Ok(ProfileSummary {
+        profiles: collect_dirs(&profiles_root)?.len(),
+        cli_dirs_present,
+        cli_dirs_missing,
+        credentials_detected,
+        credentials_missing,
+    })
+}
+
+fn print_profiles_table(config: &Config) -> Result<()> {
+    let profiles_root = paths::profiles_dir()?;
+
+    if !profiles_root.exists() {
+        print_detail_line(
+            "Status",
+            "No profiles found. Run: cloak profile create <name>",
         );
         return Ok(());
     }
@@ -59,20 +204,28 @@ fn check_profiles(config: &Config) -> Result<()> {
     profile_dirs.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
 
     if profile_dirs.is_empty() {
-        println!(
-            "{} No profiles found. Run: cloak profile create <name>",
-            err_mark()
+        print_detail_line(
+            "Status",
+            "No profiles found. Run: cloak profile create <name>",
         );
         return Ok(());
     }
 
-    for profile_dir in profile_dirs {
+    for (index, profile_dir) in profile_dirs.iter().enumerate() {
         let profile_name = profile_dir
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("<invalid>");
 
-        println!("{} Profile '{}'", info_mark(), profile_name);
+        if index > 0 {
+            println!();
+        }
+
+        println!(
+            "{}",
+            format_section_title(&format!("Profile '{}'", profile_name))
+        );
+        let mut table = new_ui_table(vec!["CLI", "Directory", "Credentials"]);
 
         let mut cli_names: Vec<&String> = config.cli.keys().collect();
         cli_names.sort();
@@ -80,24 +233,29 @@ fn check_profiles(config: &Config) -> Result<()> {
         for cli_name in cli_names {
             let cli_dir = profile_dir.join(cli_name);
             if !cli_dir.exists() {
-                println!("  {} missing dir {}", err_mark(), cli_dir.display());
+                table.add_row(vec![
+                    Cell::new(format_cli_label(cli_name)),
+                    Cell::new(format!("missing dir {}", cli_dir.display())),
+                    Cell::new("n/a"),
+                ]);
                 continue;
             }
 
-            println!("  {} dir {}", ok_mark(), cli_dir.display());
-
-            if has_credentials_hint(cli_name, &cli_dir)? {
-                println!("  {} credentials detected for {}", ok_mark(), cli_name);
+            let credentials = if has_credentials_hint(cli_name, &cli_dir)? {
+                "credentials detected"
             } else {
-                println!(
-                    "  {} no credential file detected for {}",
-                    warn_mark(),
-                    cli_name
-                );
-            }
-        }
-    }
+                "no credential file detected"
+            };
 
+            table.add_row(vec![
+                Cell::new(format_cli_label(cli_name)),
+                Cell::new(cli_dir.display().to_string()),
+                Cell::new(credentials),
+            ]);
+        }
+
+        println!("{table}");
+    }
     Ok(())
 }
 
@@ -177,20 +335,56 @@ fn collect_dirs(path: &Path) -> Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
-fn ok_mark() -> String {
-    "✓".green().to_string()
+fn format_main_heading(title: &str) -> String {
+    if io::stdout().is_terminal() {
+        title.bold().underline().to_string()
+    } else {
+        title.to_string()
+    }
 }
 
-fn err_mark() -> String {
-    "✗".red().to_string()
+fn format_section_title(title: &str) -> String {
+    if io::stdout().is_terminal() {
+        title.bold().cyan().to_string()
+    } else {
+        title.to_string()
+    }
 }
 
-fn warn_mark() -> String {
-    "!".yellow().to_string()
+fn print_detail_line(label: &str, value: &str) {
+    let label = if io::stdout().is_terminal() {
+        format!("  {}", label.bold().bright_black())
+    } else {
+        format!("  {label}")
+    };
+    println!("{label}: {value}");
 }
 
-fn info_mark() -> String {
-    "•".blue().to_string()
+fn format_cli_label(cli_name: &str) -> String {
+    match cli_name {
+        "claude" => "Claude".to_string(),
+        "codex" => "Codex".to_string(),
+        "gemini" => "Gemini".to_string(),
+        other => capitalize_label(other),
+    }
+}
+
+fn capitalize_label(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+        None => String::new(),
+    }
+}
+
+fn new_ui_table(header: Vec<&str>) -> Table {
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL_CONDENSED)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(header);
+    table
 }
 
 #[cfg(test)]
