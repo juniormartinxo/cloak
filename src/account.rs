@@ -666,9 +666,12 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        inspect_claude, inspect_claude_limits, inspect_codex, inspect_codex_limits, inspect_gemini,
-        AccountStatus, ClaudeRateLimitSnapshot, ClaudeRateLimitStatus, ClaudeRateLimitWindow,
-        CodexCreditsSummary, CodexRateLimitSnapshot, CodexRateLimitStatus, CodexRateLimitWindow,
+        display_from_claims, display_from_paths, extract_codex_credits_summary, first_nonempty_str,
+        first_scalar_string, inspect_claude, inspect_claude_limits, inspect_codex,
+        inspect_codex_limits, inspect_gemini, inspect_unknown, jwt_claims_from_token,
+        parse_codex_rate_limit_snapshot, AccountStatus, ClaudeRateLimitSnapshot,
+        ClaudeRateLimitStatus, ClaudeRateLimitWindow, CodexCreditsSummary, CodexRateLimitSnapshot,
+        CodexRateLimitStatus, CodexRateLimitWindow,
     };
 
     #[test]
@@ -931,6 +934,236 @@ mod tests {
 
         let status = inspect_claude_limits(tmp.path()).expect("inspect");
         assert_eq!(status, ClaudeRateLimitStatus::NotAuthenticated);
+    }
+
+    #[test]
+    fn test_jwt_claims_from_token_parses_valid_jwt() {
+        let token = fake_jwt(json!({"email": "test@example.com", "sub": "user_1"}));
+        let claims = jwt_claims_from_token(&token).expect("should parse");
+        assert_eq!(claims["email"], "test@example.com");
+        assert_eq!(claims["sub"], "user_1");
+    }
+
+    #[test]
+    fn test_jwt_claims_from_token_returns_none_for_invalid_token() {
+        assert!(jwt_claims_from_token("not-a-jwt").is_none());
+        assert!(jwt_claims_from_token("header.!!!invalid-base64!!!.sig").is_none());
+    }
+
+    #[test]
+    fn test_display_from_claims_prefers_email() {
+        let claims = json!({"email": "jane@example.com", "name": "Jane", "sub": "user_1"});
+        assert_eq!(
+            display_from_claims(claims),
+            Some("Jane <jane@example.com>".to_string())
+        );
+    }
+
+    #[test]
+    fn test_display_from_claims_falls_back_to_sub() {
+        let claims = json!({"sub": "user_1"});
+        assert_eq!(display_from_claims(claims), Some("user_1".to_string()));
+    }
+
+    #[test]
+    fn test_display_from_claims_returns_none_when_empty() {
+        let claims = json!({});
+        assert_eq!(display_from_claims(claims), None);
+    }
+
+    #[test]
+    fn test_display_from_paths_email_only() {
+        let value = json!({"email": "test@example.com"});
+        assert_eq!(
+            display_from_paths(&value, &["/email"], &["/name"]),
+            Some("test@example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_display_from_paths_name_only() {
+        let value = json!({"name": "Jane"});
+        assert_eq!(
+            display_from_paths(&value, &["/email"], &["/name"]),
+            Some("Jane".to_string())
+        );
+    }
+
+    #[test]
+    fn test_display_from_paths_name_and_email() {
+        let value = json!({"email": "jane@example.com", "name": "Jane"});
+        assert_eq!(
+            display_from_paths(&value, &["/email"], &["/name"]),
+            Some("Jane <jane@example.com>".to_string())
+        );
+    }
+
+    #[test]
+    fn test_display_from_paths_returns_none_when_no_match() {
+        let value = json!({"other": "data"});
+        assert_eq!(display_from_paths(&value, &["/email"], &["/name"]), None);
+    }
+
+    #[test]
+    fn test_first_nonempty_str_finds_first_match() {
+        let value = json!({"a": "", "b": "found", "c": "also"});
+        assert_eq!(
+            first_nonempty_str(&value, &["/a", "/b", "/c"]),
+            Some("found")
+        );
+    }
+
+    #[test]
+    fn test_first_nonempty_str_skips_empty_and_whitespace() {
+        let value = json!({"a": "", "b": "  ", "c": "ok"});
+        assert_eq!(first_nonempty_str(&value, &["/a", "/b", "/c"]), Some("ok"));
+    }
+
+    #[test]
+    fn test_first_nonempty_str_returns_none_when_nothing_found() {
+        let value = json!({"a": ""});
+        assert_eq!(first_nonempty_str(&value, &["/a", "/missing"]), None);
+    }
+
+    #[test]
+    fn test_first_scalar_string_extracts_string() {
+        let value = json!({"amount": "42.5"});
+        assert_eq!(
+            first_scalar_string(&value, &["/amount"]),
+            Some("42.5".to_string())
+        );
+    }
+
+    #[test]
+    fn test_first_scalar_string_extracts_number() {
+        let value = json!({"amount": 42.5});
+        assert_eq!(
+            first_scalar_string(&value, &["/amount"]),
+            Some("42.5".to_string())
+        );
+    }
+
+    #[test]
+    fn test_first_scalar_string_extracts_bool() {
+        let value = json!({"active": true});
+        assert_eq!(
+            first_scalar_string(&value, &["/active"]),
+            Some("true".to_string())
+        );
+    }
+
+    #[test]
+    fn test_first_scalar_string_skips_empty_strings() {
+        let value = json!({"a": "", "b": "ok"});
+        assert_eq!(
+            first_scalar_string(&value, &["/a", "/b"]),
+            Some("ok".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_codex_credits_summary_with_values() {
+        let value = json!({
+            "used_usd": 12.5,
+            "remaining_usd": 87.5,
+            "limit_usd": 100,
+            "resets_at": 1774719759i64
+        });
+        let summary = extract_codex_credits_summary(&value).expect("should extract");
+        assert_eq!(summary.used, Some("12.5".to_string()));
+        assert_eq!(summary.remaining, Some("87.5".to_string()));
+        assert_eq!(summary.total, Some("100".to_string()));
+        assert_eq!(summary.resets_at, Some(1774719759));
+        assert!(!summary.opaque);
+    }
+
+    #[test]
+    fn test_extract_codex_credits_summary_returns_opaque_for_empty_object() {
+        let value = json!({});
+        let summary = extract_codex_credits_summary(&value).expect("should extract");
+        assert!(summary.opaque);
+    }
+
+    #[test]
+    fn test_extract_codex_credits_summary_returns_none_for_null() {
+        assert!(extract_codex_credits_summary(&Value::Null).is_none());
+    }
+
+    #[test]
+    fn test_parse_codex_rate_limit_snapshot_valid_entry() {
+        let entry = json!({
+            "timestamp": "2026-03-28T15:23:12.299Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "rate_limits": {
+                    "limit_id": "codex",
+                    "plan_type": "team",
+                    "primary": {
+                        "used_percent": 1.0,
+                        "window_minutes": 300,
+                        "resets_at": 1774719759i64
+                    }
+                }
+            }
+        });
+        let snapshot = parse_codex_rate_limit_snapshot(&entry.to_string()).expect("should parse");
+        assert_eq!(snapshot.observed_at, "2026-03-28T15:23:12.299Z");
+        assert_eq!(snapshot.plan_type, Some("team".to_string()));
+        assert_eq!(snapshot.windows.len(), 1);
+        assert_eq!(snapshot.windows[0].label, "primary");
+    }
+
+    #[test]
+    fn test_parse_codex_rate_limit_snapshot_ignores_non_event_msg() {
+        let entry = json!({
+            "timestamp": "2026-03-28T15:23:12.299Z",
+            "type": "other_type",
+            "payload": { "type": "token_count" }
+        });
+        assert!(parse_codex_rate_limit_snapshot(&entry.to_string()).is_none());
+    }
+
+    #[test]
+    fn test_parse_codex_rate_limit_snapshot_ignores_non_token_count_payload() {
+        let entry = json!({
+            "timestamp": "2026-03-28T15:23:12.299Z",
+            "type": "event_msg",
+            "payload": { "type": "something_else" }
+        });
+        assert!(parse_codex_rate_limit_snapshot(&entry.to_string()).is_none());
+    }
+
+    #[test]
+    fn test_parse_codex_rate_limit_snapshot_ignores_invalid_json() {
+        assert!(parse_codex_rate_limit_snapshot("not json at all").is_none());
+    }
+
+    #[test]
+    fn test_inspect_unknown_detects_files_in_directory() {
+        let tmp = tempdir().expect("tempdir");
+        let cli_dir = tmp.path();
+        fs::write(cli_dir.join("some-config"), "data").expect("write");
+
+        let status = inspect_unknown(cli_dir).expect("inspect");
+        assert!(matches!(status, AccountStatus::CredentialsPresent { .. }));
+    }
+
+    #[test]
+    fn test_inspect_unknown_reports_no_credentials_for_empty_dir() {
+        let tmp = tempdir().expect("tempdir");
+
+        let status = inspect_unknown(tmp.path()).expect("inspect");
+        assert_eq!(status, AccountStatus::NoCredentials);
+    }
+
+    #[test]
+    fn test_inspect_unknown_reports_no_credentials_for_missing_dir() {
+        let tmp = tempdir().expect("tempdir");
+        let missing = tmp.path().join("nonexistent");
+
+        let status = inspect_unknown(&missing).expect("inspect");
+        assert_eq!(status, AccountStatus::NoCredentials);
     }
 
     fn fake_jwt(claims: Value) -> String {
