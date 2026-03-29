@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{stdin, stderr, stdout, IsTerminal},
+    io::{stderr, stdin, stdout, IsTerminal},
     process::{Command, Stdio},
 };
 
@@ -65,7 +65,8 @@ pub fn exec_cli(cli_name: &str, profile: &str, args: &[String], config: &Config)
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::null());
-        cmd.spawn().wrap_err("failed launching detached child process")?;
+        cmd.spawn()
+            .wrap_err("failed launching detached child process")?;
         return Ok(());
     }
 
@@ -196,9 +197,9 @@ mod tests {
     use crate::config::CliConfig;
 
     use super::{
-        is_cursor_wsl_wrapper, is_interactive_terminal, render_template,
-        resolve_effective_launch, resolve_forwarded_args, resolve_remote_agent_folder,
-        should_launch_detached, TemplateContext,
+        is_cursor_wsl_wrapper, is_interactive_terminal, render_template, resolve_effective_launch,
+        resolve_forwarded_args, resolve_remote_agent_folder, should_launch_detached,
+        TemplateContext,
     };
 
     #[test]
@@ -293,7 +294,10 @@ mod tests {
             "code",
             Path::new("/mnt/c/Users/test/AppData/Local/Programs/cursor/resources/app/bin/cursor")
         ));
-        assert!(!is_cursor_wsl_wrapper("cursor", Path::new("/usr/bin/cursor")));
+        assert!(!is_cursor_wsl_wrapper(
+            "cursor",
+            Path::new("/usr/bin/cursor")
+        ));
 
         unsafe {
             std::env::remove_var("WSL_DISTRO_NAME");
@@ -309,7 +313,9 @@ mod tests {
         assert_eq!(
             resolve_remote_agent_folder(
                 "cursor",
-                Path::new("/mnt/c/Users/test/AppData/Local/Programs/cursor/resources/app/bin/cursor"),
+                Path::new(
+                    "/mnt/c/Users/test/AppData/Local/Programs/cursor/resources/app/bin/cursor"
+                ),
                 Path::new("/tmp/profiles/work/cursor")
             ),
             Some(Path::new("/tmp/profiles/work/cursor/.cursor-server").into())
@@ -317,7 +323,9 @@ mod tests {
         assert_eq!(
             resolve_remote_agent_folder(
                 "codex",
-                Path::new("/mnt/c/Users/test/AppData/Local/Programs/cursor/resources/app/bin/cursor"),
+                Path::new(
+                    "/mnt/c/Users/test/AppData/Local/Programs/cursor/resources/app/bin/cursor"
+                ),
                 Path::new("/tmp/profiles/work/cursor")
             ),
             None
