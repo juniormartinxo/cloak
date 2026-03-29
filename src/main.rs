@@ -990,9 +990,12 @@ mod tests {
     use crate::config::{CliConfig, Config, GeneralConfig};
 
     use super::{
-        format_unix_timestamp_utc, legacy_claude_statusline_script,
-        provision_default_claude_statusline,
+        civil_from_days, format_codex_credits, format_limit_subject_detail, format_percent,
+        format_unix_timestamp_utc, format_window_minutes, legacy_claude_statusline_script,
+        provision_default_claude_statusline, shell_single_quote,
+        should_update_generated_claude_statusline,
     };
+    use crate::account::CodexCreditsSummary;
 
     #[test]
     fn test_provision_statusline_assets_for_claude_profile() {
@@ -1122,5 +1125,144 @@ mod tests {
             format_unix_timestamp_utc(1_774_719_759),
             "2026-03-28 17:42:39 UTC"
         );
+    }
+
+    #[test]
+    fn test_format_unix_timestamp_utc_renders_epoch_zero() {
+        assert_eq!(format_unix_timestamp_utc(0), "1970-01-01 00:00:00 UTC");
+    }
+
+    #[test]
+    fn test_format_window_minutes_renders_weeks() {
+        assert_eq!(format_window_minutes(10_080), "1w");
+        assert_eq!(format_window_minutes(20_160), "2w");
+    }
+
+    #[test]
+    fn test_format_window_minutes_renders_days() {
+        assert_eq!(format_window_minutes(1_440), "1d");
+        assert_eq!(format_window_minutes(4_320), "3d");
+    }
+
+    #[test]
+    fn test_format_window_minutes_renders_hours() {
+        assert_eq!(format_window_minutes(60), "1h");
+        assert_eq!(format_window_minutes(300), "5h");
+    }
+
+    #[test]
+    fn test_format_window_minutes_renders_raw_minutes() {
+        assert_eq!(format_window_minutes(45), "45m");
+        assert_eq!(format_window_minutes(90), "90m");
+    }
+
+    #[test]
+    fn test_format_percent_renders_integer_without_decimal() {
+        assert_eq!(format_percent(0.0), "0%");
+        assert_eq!(format_percent(100.0), "100%");
+        assert_eq!(format_percent(42.0), "42%");
+    }
+
+    #[test]
+    fn test_format_percent_renders_fractional_with_one_decimal() {
+        assert_eq!(format_percent(12.5), "12.5%");
+        assert_eq!(format_percent(99.9), "99.9%");
+    }
+
+    #[test]
+    fn test_format_limit_subject_detail_all_combinations() {
+        assert_eq!(
+            format_limit_subject_detail(Some("team"), Some("default_raven")),
+            Some("plan: team, tier: default_raven".to_string())
+        );
+        assert_eq!(
+            format_limit_subject_detail(Some("team"), None),
+            Some("plan: team".to_string())
+        );
+        assert_eq!(
+            format_limit_subject_detail(None, Some("default_raven")),
+            Some("tier: default_raven".to_string())
+        );
+        assert_eq!(format_limit_subject_detail(None, None), None);
+    }
+
+    #[test]
+    fn test_format_codex_credits_with_all_fields() {
+        let credits = CodexCreditsSummary {
+            used: Some("12.5".to_string()),
+            remaining: Some("87.5".to_string()),
+            total: Some("100".to_string()),
+            resets_at: Some(1_774_719_759),
+            opaque: false,
+        };
+        let result = format_codex_credits(&credits);
+        assert!(result.contains("used 12.5"));
+        assert!(result.contains("remaining 87.5"));
+        assert!(result.contains("total 100"));
+        assert!(result.contains("resets 2026-03-28 17:42:39 UTC"));
+    }
+
+    #[test]
+    fn test_format_codex_credits_partial_fields() {
+        let credits = CodexCreditsSummary {
+            used: Some("5.0".to_string()),
+            remaining: None,
+            total: None,
+            resets_at: None,
+            opaque: false,
+        };
+        assert_eq!(format_codex_credits(&credits), "used 5.0");
+    }
+
+    #[test]
+    fn test_format_codex_credits_opaque() {
+        let credits = CodexCreditsSummary {
+            used: None,
+            remaining: None,
+            total: None,
+            resets_at: None,
+            opaque: true,
+        };
+        assert_eq!(
+            format_codex_credits(&credits),
+            "available (details unavailable)"
+        );
+    }
+
+    #[test]
+    fn test_civil_from_days_epoch() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+    }
+
+    #[test]
+    fn test_civil_from_days_known_dates() {
+        assert_eq!(civil_from_days(20_540), (2026, 3, 28));
+        assert_eq!(civil_from_days(11_016), (2000, 2, 29));
+    }
+
+    #[test]
+    fn test_shell_single_quote_simple_path() {
+        let result = shell_single_quote(std::path::Path::new("/tmp/scripts/run.sh"));
+        assert_eq!(result, "'/tmp/scripts/run.sh'");
+    }
+
+    #[test]
+    fn test_shell_single_quote_with_single_quote_in_path() {
+        let result = shell_single_quote(std::path::Path::new("/tmp/it's here/run.sh"));
+        assert_eq!(result, "'/tmp/it'\"'\"'s here/run.sh'");
+    }
+
+    #[test]
+    fn test_should_update_generated_claude_statusline_detects_legacy() {
+        assert!(should_update_generated_claude_statusline(
+            legacy_claude_statusline_script()
+        ));
+    }
+
+    #[test]
+    fn test_should_update_generated_claude_statusline_ignores_custom() {
+        assert!(!should_update_generated_claude_statusline(
+            "#!/usr/bin/env bash\necho custom\n"
+        ));
     }
 }
