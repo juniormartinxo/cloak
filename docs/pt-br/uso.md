@@ -44,6 +44,7 @@ cloak login gemini work
 # 4) Inspecionar contexto atual
 cloak profile show
 cloak profile account work
+cloak profile limits work
 cloak doctor
 ```
 
@@ -75,6 +76,36 @@ Como o `cloak` detecta isso:
 
 Esse comando apenas inspeciona arquivos locais dentro de `profiles/<nome>/<cli>`; ele nao consulta
 nenhuma API remota.
+
+## Inspecionar limites de uso em um perfil
+
+Use isso quando quiser os snapshots locais de limites mais recentes de um perfil, incluindo quanto
+de cada janela ja foi usado, quanto ainda resta e quando ocorre o reset:
+
+```bash
+cloak profile limits work
+```
+
+Saida tipica:
+
+```text
+Profile 'work'
+claude -> usage snapshot available (plan: team, tier: default_raven)
+claude observed at -> 2026-03-28T18:12:44Z
+claude five_hour (5h) -> used 12.5%, remaining 87.5%, resets 2026-03-28 17:42:39 UTC
+claude seven_day (1w) -> used 37%, remaining 63%, resets 2026-04-03 13:36:17 UTC
+codex -> usage snapshot available (plan: team)
+codex observed at -> 2026-03-28T15:23:12.299Z
+codex primary (5h) -> used 1%, remaining 99%, resets 2026-03-28 17:42:39 UTC
+codex secondary (1w) -> used 30%, remaining 70%, resets 2026-04-03 13:36:17 UTC
+```
+
+Origem dos snapshots:
+
+- `claude`: le `profiles/<nome>/claude/usage-limits.json`, gravado pelo statusline padrao do
+  Claude depois que o Claude recebe pelo menos uma resposta naquele perfil.
+- `codex`: le o evento `token_count` mais recente em `profiles/<nome>/codex/sessions` e usa o
+  payload `rate_limits` persistido pela CLI do Codex.
 
 ## Trocar perfil de um repo
 
