@@ -95,22 +95,14 @@ fn main() -> Result<()> {
             }
 
             let path = profile::write_cloak_file(&cwd, &profile_name)?;
-            println!(
-                "Created {} with profile \"{}\"",
-                display_path(&path),
-                profile_name
-            );
+            println!("{}", format_main_heading("Repository Profile"));
+            print_detail_line("File", &display_path(&path));
+            print_detail_line("Profile", &profile_name);
         }
         Commands::Profile(sub) => match sub {
             ProfileCommands::List => {
                 let names = list_profiles()?;
-                if names.is_empty() {
-                    println!("No profiles found. Run: cloak profile create <name>");
-                } else {
-                    for name in names {
-                        println!("{}", name);
-                    }
-                }
+                show_profile_list(&names, &loaded.config.general.default_profile);
             }
             ProfileCommands::Account { name } => {
                 show_profile_accounts(&name, &loaded.config)?;
@@ -154,11 +146,9 @@ fn main() -> Result<()> {
             let missing = config::missing_recommended_cli_names(&config_for_doctor);
 
             if !missing.is_empty() {
-                println!(
-                    "Missing recommended CLI config blocks in {}: {}",
-                    display_path(&loaded.path),
-                    missing.join(", ")
-                );
+                println!("{}", format_section_title("Recommended CLI Blocks"));
+                print_detail_line("Config", &display_path(&loaded.path));
+                print_detail_line("Missing", &missing.join(", "));
 
                 if is_interactive_terminal() {
                     if confirm(&format!(
@@ -167,17 +157,19 @@ fn main() -> Result<()> {
                     ))? {
                         let added = config::append_default_cli_blocks(&loaded.path, &missing)?;
                         if !added.is_empty() {
-                            println!("Added default config for: {}", added.join(", "));
+                            print_detail_line("Added", &added.join(", "));
                             config_for_doctor = config::load_config_from_path(&loaded.path)?;
                         }
                     } else {
-                        println!("Skipped optional config migration.");
+                        print_detail_line("Status", "Skipped optional config migration.");
                     }
                 } else {
-                    println!(
-                        "Non-interactive terminal detected. Skipping optional migration prompt."
+                    print_detail_line(
+                        "Status",
+                        "Non-interactive terminal detected. Skipping optional migration prompt.",
                     );
                 }
+                println!();
             }
 
             doctor::run_doctor(&config_for_doctor, &loaded.path, loaded.created)?;
@@ -186,6 +178,28 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn show_profile_list(names: &[String], default_profile: &str) {
+    println!("{}", format_main_heading("Profiles"));
+    print_detail_line("Default", default_profile);
+    print_detail_line("Count", &names.len().to_string());
+
+    if names.is_empty() {
+        print_detail_line(
+            "Status",
+            "No profiles found. Run: cloak profile create <name>",
+        );
+        return;
+    }
+
+    println!();
+    let mut table = new_ui_table(vec!["Profile", "Default"]);
+    for name in names {
+        let default_marker = if name == default_profile { "yes" } else { "" };
+        table.add_row(vec![Cell::new(name), Cell::new(default_marker)]);
+    }
+    println!("{table}");
 }
 
 fn create_profile(name: &str, cfg: &config::Config) -> Result<()> {
@@ -205,41 +219,41 @@ fn create_profile(name: &str, cfg: &config::Config) -> Result<()> {
     }
 
     let statusline_result = provision_default_claude_statusline(&profile_dir, cfg)?;
+    println!("{}", format_main_heading(&format!("Profile '{}'", name)));
 
     if existed {
-        println!(
-            "Profile '{}' already exists at {}",
-            name,
-            display_path(&profile_dir)
-        );
+        print_detail_line("Status", "already exists");
     } else {
-        println!(
-            "Profile '{}' created at {}",
-            name,
-            display_path(&profile_dir)
+        print_detail_line("Status", "created");
+        print_detail_line(
+            "Next",
+            &format!("Run `cloak login <cli> {name}` to authenticate."),
         );
-        println!("Run `cloak login <cli> {}` to authenticate.", name);
     }
+    print_detail_line("Location", &display_path(&profile_dir));
 
     if statusline_result.script_created {
-        println!(
-            "Claude statusline script created at {}",
-            display_path(&statusline_result.script_path)
-        );
+        println!();
+        println!("{}", format_section_title("Claude"));
+        print_detail_line("Statusline", "script created");
+        print_detail_line("Script", &display_path(&statusline_result.script_path));
     }
 
     if statusline_result.script_updated {
-        println!(
-            "Claude statusline script updated at {}",
-            display_path(&statusline_result.script_path)
-        );
+        if !statusline_result.script_created {
+            println!();
+            println!("{}", format_section_title("Claude"));
+        }
+        print_detail_line("Statusline", "script updated");
+        print_detail_line("Script", &display_path(&statusline_result.script_path));
     }
 
     if statusline_result.settings_updated {
-        println!(
-            "Claude settings updated at {}",
-            display_path(&statusline_result.settings_path)
-        );
+        if !statusline_result.script_created && !statusline_result.script_updated {
+            println!();
+            println!("{}", format_section_title("Claude"));
+        }
+        print_detail_line("Settings", &display_path(&statusline_result.settings_path));
     }
 
     Ok(())
@@ -265,6 +279,7 @@ fn delete_profile(name: &str, yes: bool, loaded: &config::LoadedConfig) -> Resul
     }
 
     let is_default = loaded.config.general.default_profile == name;
+    println!("{}", format_main_heading(&format!("Profile '{}'", name)));
 
     if is_default {
         let all = list_profiles()?;
@@ -278,15 +293,18 @@ fn delete_profile(name: &str, yes: bool, loaded: &config::LoadedConfig) -> Resul
             };
 
             config::update_default_profile(&loaded.path, &new_default)?;
-            println!("Default profile updated: '{}' -> '{}'", name, new_default);
+            print_detail_line("Default", &format!("updated: {name} -> {new_default}"));
         } else {
-            println!(
-                "Warning: '{}' is your default profile and no other profiles exist.",
-                name
+            print_detail_line(
+                "Warning",
+                &format!("'{name}' is your default profile and no other profiles exist."),
             );
-            println!(
-                "  After deletion, create a new profile and update default_profile in {}",
-                display_path(&loaded.path)
+            print_detail_line(
+                "Action",
+                &format!(
+                    "After deletion, create a new profile and update default_profile in {}",
+                    display_path(&loaded.path)
+                ),
             );
         }
     }
@@ -294,12 +312,15 @@ fn delete_profile(name: &str, yes: bool, loaded: &config::LoadedConfig) -> Resul
     fs::remove_dir_all(&profile_dir)
         .wrap_err_with(|| format!("failed deleting {}", profile_dir.display()))?;
 
-    println!("Profile '{}' deleted", name);
-    println!(
-        "Note: .cloak files in project directories may still reference '{}'.",
-        name
+    print_detail_line("Status", "deleted");
+    print_detail_line(
+        "Note",
+        &format!(".cloak files in project directories may still reference '{name}'."),
     );
-    println!("  Run `cloak use <profile>` in those directories to update them.");
+    print_detail_line(
+        "Action",
+        "Run `cloak use <profile>` in those directories to update them.",
+    );
     Ok(())
 }
 
@@ -326,48 +347,58 @@ fn pick_new_default_profile(remaining: &[String]) -> Result<String> {
 }
 
 fn show_profile(resolved: &ResolvedProfile, cfg: &config::Config) -> Result<()> {
+    println!(
+        "{}",
+        format_main_heading(&format!("Profile '{}'", resolved.name))
+    );
     match &resolved.source {
         ProfileSource::CloakFile(path) => {
-            println!("Profile: {} (from {})", resolved.name, display_path(path));
+            print_detail_line("Source", &format!("from {}", display_path(path)));
         }
         ProfileSource::DefaultProfile => {
-            println!("Profile: {} (fallback to default)", resolved.name);
+            print_detail_line("Source", "fallback to default");
         }
     }
 
     let mut cli_names: Vec<&String> = cfg.cli.keys().collect();
     cli_names.sort();
 
+    println!();
+    println!("{}", format_section_title("CLI Configuration"));
+    let mut table = new_ui_table(vec!["CLI", "Setting", "Value"]);
+
     for cli_name in cli_names {
         let cli_cfg = &cfg.cli[cli_name];
         let cli_dir = paths::profile_cli_dir(&resolved.name, cli_name)?;
-        println!("{} -> profile_dir={}", cli_name, display_path(&cli_dir));
+        table.add_row(vec![
+            Cell::new(format_cli_label(cli_name)),
+            Cell::new("profile_dir"),
+            Cell::new(display_path(&cli_dir)),
+        ]);
 
         if let Some(config_dir_env) = &cli_cfg.config_dir_env {
-            println!(
-                "{} -> {}={}",
-                cli_name,
-                config_dir_env,
-                display_path(&cli_dir)
-            );
+            table.add_row(vec![
+                Cell::new(format_cli_label(cli_name)),
+                Cell::new(config_dir_env),
+                Cell::new(display_path(&cli_dir)),
+            ]);
         }
 
         let mut extra_env: Vec<_> = cli_cfg.extra_env.iter().collect();
         extra_env.sort_by(|a, b| a.0.cmp(b.0));
         for (name, value) in extra_env {
-            println!(
-                "{} -> {}={}",
-                cli_name,
-                name,
-                exec::render_template(
+            table.add_row(vec![
+                Cell::new(format_cli_label(cli_name)),
+                Cell::new(name),
+                Cell::new(exec::render_template(
                     value,
                     &exec::TemplateContext {
                         cli_name,
                         profile: &resolved.name,
                         profile_dir: &cli_dir,
                     },
-                )
-            );
+                )),
+            ]);
         }
 
         let resolved_binary = which::which(&cli_cfg.binary)
@@ -375,11 +406,11 @@ fn show_profile(resolved: &ResolvedProfile, cfg: &config::Config) -> Result<()> 
         if let Some(agent_folder) =
             exec::resolve_remote_agent_folder(cli_name, &resolved_binary, &cli_dir)
         {
-            println!(
-                "{} -> VSCODE_AGENT_FOLDER={}",
-                cli_name,
-                display_path(&agent_folder)
-            );
+            table.add_row(vec![
+                Cell::new(format_cli_label(cli_name)),
+                Cell::new("VSCODE_AGENT_FOLDER"),
+                Cell::new(display_path(&agent_folder)),
+            ]);
         }
 
         if !cli_cfg.launch_args.is_empty() {
@@ -398,9 +429,15 @@ fn show_profile(resolved: &ResolvedProfile, cfg: &config::Config) -> Result<()> 
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
-            println!("{} -> launch_args={}", cli_name, rendered_args);
+            table.add_row(vec![
+                Cell::new(format_cli_label(cli_name)),
+                Cell::new("launch_args"),
+                Cell::new(rendered_args),
+            ]);
         }
     }
+
+    println!("{table}");
 
     Ok(())
 }
@@ -412,21 +449,35 @@ fn show_profile_accounts(profile: &str, cfg: &config::Config) -> Result<()> {
         return Err(eyre!("profile '{}' does not exist", profile));
     }
 
-    println!("Profile '{}'", profile);
+    println!("{}", format_main_heading(&format!("Profile '{}'", profile)));
+    println!();
+    println!("{}", format_section_title("Accounts"));
+    let mut table = new_ui_table(vec!["CLI", "Account"]);
 
     for account in inspect_profile_accounts(profile, cfg)? {
         match account.status {
             AccountStatus::Identified { display } => {
-                println!("{} -> {}", account.cli_name, display);
+                table.add_row(vec![
+                    Cell::new(format_cli_label(&account.cli_name)),
+                    Cell::new(display),
+                ]);
             }
             AccountStatus::CredentialsPresent { detail } => {
-                println!("{} -> {}", account.cli_name, detail);
+                table.add_row(vec![
+                    Cell::new(format_cli_label(&account.cli_name)),
+                    Cell::new(detail),
+                ]);
             }
             AccountStatus::NoCredentials => {
-                println!("{} -> not authenticated", account.cli_name);
+                table.add_row(vec![
+                    Cell::new(format_cli_label(&account.cli_name)),
+                    Cell::new("not authenticated"),
+                ]);
             }
         }
     }
+
+    println!("{table}");
 
     Ok(())
 }
@@ -438,7 +489,7 @@ fn show_profile_limits(profile: &str, cfg: &config::Config) -> Result<()> {
         return Err(eyre!("profile '{}' does not exist", profile));
     }
 
-    println!("{}", format_profile_limits_heading(profile));
+    println!("{}", format_main_heading(&format!("Profile '{}'", profile)));
 
     let mut rendered_any = false;
     let mut rendered_sections = 0usize;
@@ -453,7 +504,7 @@ fn show_profile_limits(profile: &str, cfg: &config::Config) -> Result<()> {
                 print_claude_limits_snapshot(&snapshot);
             }
             ClaudeRateLimitStatus::NoUsageData => {
-                print_limit_field(
+                print_detail_line(
                     "Status",
                     "authenticated, but no local usage snapshot was found yet",
                 );
@@ -461,14 +512,14 @@ fn show_profile_limits(profile: &str, cfg: &config::Config) -> Result<()> {
                     || provision_result.script_updated
                     || provision_result.settings_updated
                 {
-                    print_limit_field(
+                    print_detail_line(
                         "Note",
                         "snapshot support was refreshed; open or continue a Claude session to populate usage data",
                     );
                 }
             }
             ClaudeRateLimitStatus::NotAuthenticated => {
-                print_limit_field("Status", "not authenticated");
+                print_detail_line("Status", "not authenticated");
             }
             ClaudeRateLimitStatus::NotConfigured => {}
         }
@@ -480,13 +531,13 @@ fn show_profile_limits(profile: &str, cfg: &config::Config) -> Result<()> {
         match inspect_profile_codex_limits(profile, cfg)? {
             CodexRateLimitStatus::Available(snapshot) => print_codex_limits_snapshot(&snapshot),
             CodexRateLimitStatus::NoUsageData => {
-                print_limit_field(
+                print_detail_line(
                     "Status",
                     "authenticated, but no local usage snapshot was found yet",
                 );
             }
             CodexRateLimitStatus::NotAuthenticated => {
-                print_limit_field("Status", "not authenticated");
+                print_detail_line("Status", "not authenticated");
             }
             CodexRateLimitStatus::NotConfigured => {}
         }
@@ -522,13 +573,13 @@ fn print_claude_limits_snapshot(snapshot: &ClaudeRateLimitSnapshot) {
 
     match detail {
         Some(detail) => {
-            print_limit_field("Status", "usage snapshot available");
-            print_limit_field("Details", &detail);
+            print_detail_line("Status", "usage snapshot available");
+            print_detail_line("Details", &detail);
         }
-        None => print_limit_field("Status", "usage snapshot available"),
+        None => print_detail_line("Status", "usage snapshot available"),
     }
 
-    print_limit_field("Observed", &snapshot.observed_at);
+    print_detail_line("Observed", &snapshot.observed_at);
     if !snapshot.windows.is_empty() {
         println!(
             "{}",
@@ -549,12 +600,12 @@ fn print_limit_section_header(subject: &str, rendered_sections: &mut usize) {
         println!();
     }
 
-    let title = format_limit_section_title(subject);
+    let title = format_section_title(&format_cli_label(subject));
     println!("{title}");
     *rendered_sections += 1;
 }
 
-fn print_limit_field(label: &str, value: &str) {
+fn print_detail_line(label: &str, value: &str) {
     let label = if io::stdout().is_terminal() {
         format!("  {}", label.bold().bright_black())
     } else {
@@ -580,18 +631,18 @@ fn format_limit_subject_detail(
 fn print_codex_limits_snapshot(snapshot: &CodexRateLimitSnapshot) {
     match snapshot.plan_type.as_deref() {
         Some(plan_type) => {
-            print_limit_field("Status", "usage snapshot available");
-            print_limit_field("Details", &format!("plan: {plan_type}"));
+            print_detail_line("Status", "usage snapshot available");
+            print_detail_line("Details", &format!("plan: {plan_type}"));
         }
-        None => print_limit_field("Status", "usage snapshot available"),
+        None => print_detail_line("Status", "usage snapshot available"),
     }
 
-    print_limit_field("Observed", &snapshot.observed_at);
+    print_detail_line("Observed", &snapshot.observed_at);
 
     if let Some(limit_name) = snapshot.limit_name.as_deref() {
-        print_limit_field("Limit", limit_name);
+        print_detail_line("Limit", limit_name);
     } else if let Some(limit_id) = snapshot.limit_id.as_deref() {
-        print_limit_field("Limit", limit_id);
+        print_detail_line("Limit", limit_id);
     }
 
     if !snapshot.windows.is_empty() {
@@ -609,26 +660,19 @@ fn print_codex_limits_snapshot(snapshot: &CodexRateLimitSnapshot) {
     }
 
     if let Some(credits) = snapshot.credits.as_ref() {
-        print_limit_field("Credits", &format_codex_credits(credits));
+        print_detail_line("Credits", &format_codex_credits(credits));
     }
 }
 
-fn format_profile_limits_heading(profile: &str) -> String {
-    let heading = format!("Profile '{profile}'");
+fn format_main_heading(title: &str) -> String {
     if io::stdout().is_terminal() {
-        heading.bold().underline().to_string()
+        title.bold().underline().to_string()
     } else {
-        heading
+        title.to_string()
     }
 }
 
-fn format_limit_section_title(subject: &str) -> String {
-    let title = match subject {
-        "claude" => "Claude",
-        "codex" => "Codex",
-        other => other,
-    };
-
+fn format_section_title(title: &str) -> String {
     if io::stdout().is_terminal() {
         title.bold().cyan().to_string()
     } else {
@@ -636,16 +680,38 @@ fn format_limit_section_title(subject: &str) -> String {
     }
 }
 
-fn build_usage_windows_table<'a, I>(windows: I) -> String
-where
-    I: IntoIterator<Item = (&'a str, u64, f64, i64)>,
-{
+fn format_cli_label(cli_name: &str) -> String {
+    match cli_name {
+        "claude" => "Claude".to_string(),
+        "codex" => "Codex".to_string(),
+        "gemini" => "Gemini".to_string(),
+        other => capitalize_label(other),
+    }
+}
+
+fn capitalize_label(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+        None => String::new(),
+    }
+}
+
+fn new_ui_table(header: Vec<&str>) -> Table {
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL_CONDENSED)
         .apply_modifier(UTF8_ROUND_CORNERS)
         .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(vec!["Limit", "Window", "Used", "Remaining", "Resets"]);
+        .set_header(header);
+    table
+}
+
+fn build_usage_windows_table<'a, I>(windows: I) -> String
+where
+    I: IntoIterator<Item = (&'a str, u64, f64, i64)>,
+{
+    let mut table = new_ui_table(vec!["Limit", "Window", "Used", "Remaining", "Resets"]);
 
     for (label, window_minutes, used_percent, resets_at) in windows {
         let remaining_percent = (100.0 - used_percent).clamp(0.0, 100.0);
