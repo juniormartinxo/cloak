@@ -61,6 +61,9 @@ pub enum ProfileCommands {
     /// Show which account(s) a profile is authenticated with
     Account { name: String },
 
+    /// Show usage limits for supported CLIs in a profile
+    Limits { name: String },
+
     /// Create profile directory structure
     Create { name: String },
 
@@ -168,6 +171,16 @@ mod tests {
         match parsed.command {
             Commands::Profile(ProfileCommands::Account { name }) => assert_eq!(name, "work"),
             _ => panic!("expected profile account command"),
+        }
+    }
+
+    #[test]
+    fn test_profile_limits_parses_name() {
+        let parsed = Cli::parse_from(["cloak", "profile", "limits", "work"]);
+
+        match parsed.command {
+            Commands::Profile(ProfileCommands::Limits { name }) => assert_eq!(name, "work"),
+            _ => panic!("expected profile limits command"),
         }
     }
 
