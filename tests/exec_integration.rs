@@ -393,6 +393,105 @@ mod unix_exec_tests {
     }
 
     #[test]
+    fn profile_list_renders_table_with_default_marker() {
+        let tmp = tempdir().expect("tempdir");
+        let xdg_config_home = tmp.path().join("xdg");
+        let profiles_root = xdg_config_home.join("cloak").join("profiles");
+
+        write_standard_config(&xdg_config_home);
+        fs::create_dir_all(profiles_root.join("personal")).expect("create personal profile");
+        fs::create_dir_all(profiles_root.join("work")).expect("create work profile");
+
+        let output = Command::new(cloak_bin())
+            .arg("profile")
+            .arg("list")
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak profile list");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("Profiles"), "missing heading:\n{stdout}");
+        assert!(
+            stdout.contains("  Default: personal"),
+            "missing default line:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("  Count: 2"),
+            "missing count line:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("Profile"),
+            "missing table header:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("personal"),
+            "missing personal row:\n{stdout}"
+        );
+        assert!(stdout.contains("work"), "missing work row:\n{stdout}");
+        assert!(stdout.contains("yes"), "missing default marker:\n{stdout}");
+    }
+
+    #[test]
+    fn profile_show_renders_cli_configuration_table() {
+        let tmp = tempdir().expect("tempdir");
+        let bin_dir = tmp.path().join("bin");
+        let repo = tmp.path().join("repo-show");
+        let xdg_config_home = tmp.path().join("xdg");
+
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+        fs::create_dir_all(&repo).expect("create repo dir");
+
+        let mock_binary = create_mock_binary(&bin_dir);
+        write_editor_config(&xdg_config_home, &mock_binary, "personal");
+        fs::write(repo.join(".cloak"), "profile = \"work\"\n").expect("write .cloak");
+
+        let output = Command::new(cloak_bin())
+            .arg("profile")
+            .arg("show")
+            .current_dir(&repo)
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak profile show");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("Profile 'work'"),
+            "missing profile heading:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("  Source: from"),
+            "missing source line:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("CLI Configuration"),
+            "missing configuration section:\n{stdout}"
+        );
+        assert!(stdout.contains("Cursor"), "missing cursor row:\n{stdout}");
+        assert!(
+            stdout.contains("CURSOR_USER_DATA_DIR"),
+            "missing extra env row:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("launch_args"),
+            "missing launch args row:\n{stdout}"
+        );
+    }
+
+    #[test]
     fn profile_account_shows_detected_accounts_per_cli() {
         let tmp = tempdir().expect("tempdir");
         let xdg_config_home = tmp.path().join("xdg");
@@ -466,15 +565,22 @@ mod unix_exec_tests {
             "missing profile header:\n{stdout}"
         );
         assert!(
-            stdout.contains("claude -> credentials detected, but account identifier unavailable"),
+            stdout.contains("Accounts"),
+            "missing accounts section:\n{stdout}"
+        );
+        assert!(stdout.contains("Claude"), "missing claude row:\n{stdout}");
+        assert!(
+            stdout.contains("credentials detected, but account identifier unavailable"),
             "missing claude output:\n{stdout}"
         );
+        assert!(stdout.contains("Codex"), "missing codex row:\n{stdout}");
         assert!(
-            stdout.contains("codex -> Jane Doe <jane@example.com>"),
+            stdout.contains("Jane Doe <jane@example.com>"),
             "missing codex identity:\n{stdout}"
         );
+        assert!(stdout.contains("Gemini"), "missing gemini row:\n{stdout}");
         assert!(
-            stdout.contains("gemini -> Gem User <gem@example.com>"),
+            stdout.contains("Gem User <gem@example.com>"),
             "missing gemini identity:\n{stdout}"
         );
     }
@@ -678,6 +784,83 @@ mod unix_exec_tests {
         assert!(
             stdout.contains("seven_day"),
             "missing claude seven-day window:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn doctor_renders_tables_for_binaries_and_profiles() {
+        let tmp = tempdir().expect("tempdir");
+        let bin_dir = tmp.path().join("bin");
+        let xdg_config_home = tmp.path().join("xdg");
+        let profiles_root = xdg_config_home.join("cloak").join("profiles");
+        let work_dir = profiles_root.join("work").join("mock");
+
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+        fs::create_dir_all(&work_dir).expect("create profile dir");
+
+        let mock_binary = create_mock_binary(&bin_dir);
+        write_config(&xdg_config_home, &mock_binary, "personal");
+        fs::write(work_dir.join("some-config.json"), "{}").expect("write hint file");
+
+        let output = Command::new(cloak_bin())
+            .arg("doctor")
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak doctor");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("Recommended CLI Blocks"),
+            "missing recommended blocks section:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("Doctor"),
+            "missing doctor heading:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("Summary"),
+            "missing summary section:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("Binaries"),
+            "missing binaries section:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("Profiles"),
+            "missing profiles section:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("Profile 'work'"),
+            "missing per-profile section:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("  CLI blocks: 1"),
+            "missing cli block summary:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("  Binaries: 1 found, 0 missing"),
+            "missing binaries summary:\n{stdout}"
+        );
+        assert!(stdout.contains("mock"), "missing mock row:\n{stdout}");
+        assert!(stdout.contains("found"), "missing binary status:\n{stdout}");
+        assert!(
+            stdout.contains("/bin/mock-cli.sh"),
+            "missing binary location:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("credentials detected"),
+            "missing credential hint:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("Mock"),
+            "missing profile cli row:\n{stdout}"
         );
     }
 
