@@ -479,6 +479,177 @@ mod unix_exec_tests {
         );
     }
 
+    #[test]
+    fn profile_limits_shows_codex_rate_limits() {
+        let tmp = tempdir().expect("tempdir");
+        let xdg_config_home = tmp.path().join("xdg");
+        let profiles_root = xdg_config_home.join("cloak").join("profiles");
+        let work_dir = profiles_root.join("work");
+
+        write_standard_config(&xdg_config_home);
+
+        fs::create_dir_all(work_dir.join("codex/sessions/2026/03/28")).expect("create codex dir");
+        fs::write(
+            work_dir.join("codex/auth.json"),
+            json!({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "account_id": "acct_123"
+                }
+            })
+            .to_string(),
+        )
+        .expect("write codex auth");
+
+        let session = json!({
+            "timestamp": "2026-03-28T15:23:12.299Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "rate_limits": {
+                    "limit_id": "codex",
+                    "limit_name": "Codex Team",
+                    "plan_type": "team",
+                    "primary": {
+                        "used_percent": 1.0,
+                        "window_minutes": 300,
+                        "resets_at": 1774719759i64
+                    },
+                    "secondary": {
+                        "used_percent": 30.0,
+                        "window_minutes": 10080,
+                        "resets_at": 1775223377i64
+                    }
+                }
+            }
+        });
+
+        fs::write(
+            work_dir.join("codex/sessions/2026/03/28/rollout-a.jsonl"),
+            format!("{session}\n"),
+        )
+        .expect("write codex session");
+
+        let output = Command::new(cloak_bin())
+            .arg("profile")
+            .arg("limits")
+            .arg("work")
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak profile limits");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("Profile 'work'"),
+            "missing profile header:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("codex -> usage snapshot available (plan: team)"),
+            "missing codex summary:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("codex observed at -> 2026-03-28T15:23:12.299Z"),
+            "missing observed timestamp:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "codex primary (5h) -> used 1%, remaining 99%, resets 2026-03-28 17:42:39 UTC"
+            ),
+            "missing primary limit window:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "codex secondary (1w) -> used 30%, remaining 70%, resets 2026-04-03 13:36:17 UTC"
+            ),
+            "missing secondary limit window:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn profile_limits_shows_claude_rate_limits() {
+        let tmp = tempdir().expect("tempdir");
+        let xdg_config_home = tmp.path().join("xdg");
+        let profiles_root = xdg_config_home.join("cloak").join("profiles");
+        let work_dir = profiles_root.join("work");
+
+        write_standard_config(&xdg_config_home);
+
+        fs::create_dir_all(work_dir.join("claude")).expect("create claude dir");
+        fs::write(
+            work_dir.join("claude/.credentials.json"),
+            json!({
+                "claudeAiOauth": {
+                    "subscriptionType": "team",
+                    "rateLimitTier": "default_raven"
+                }
+            })
+            .to_string(),
+        )
+        .expect("write claude credentials");
+        fs::write(
+            work_dir.join("claude/usage-limits.json"),
+            json!({
+                "observed_at": "2026-03-28T18:12:44Z",
+                "rate_limits": {
+                    "five_hour": {
+                        "used_percentage": 12.5,
+                        "resets_at": 1774719759i64
+                    },
+                    "seven_day": {
+                        "used_percentage": 37.0,
+                        "resets_at": 1775223377i64
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("write claude usage snapshot");
+
+        let output = Command::new(cloak_bin())
+            .arg("profile")
+            .arg("limits")
+            .arg("work")
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak profile limits");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("claude -> usage snapshot available (plan: team, tier: default_raven)"),
+            "missing claude summary:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("claude observed at -> 2026-03-28T18:12:44Z"),
+            "missing claude observed timestamp:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "claude five_hour (5h) -> used 12.5%, remaining 87.5%, resets 2026-03-28 17:42:39 UTC"
+            ),
+            "missing claude five-hour window:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "claude seven_day (1w) -> used 37%, remaining 63%, resets 2026-04-03 13:36:17 UTC"
+            ),
+            "missing claude seven-day window:\n{stdout}"
+        );
+    }
+
     fn cloak_bin() -> PathBuf {
         if let Some(path) = std::env::var_os("CARGO_BIN_EXE_cloak").map(PathBuf::from) {
             return path;
