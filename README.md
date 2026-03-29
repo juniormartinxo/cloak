@@ -48,7 +48,7 @@ No wrappers running in background. No daemons. No persistent state. Just a clean
 | 👤 **Account inspection** | Shows which account each CLI profile appears to be authenticated with |
 | 🩺 **Doctor command** | Validates config, binaries, profile structure and credential hints |
 | 💻 **Shell completions** | Bash, Zsh, Fish, PowerShell and Elvish |
-| 🖥️ **Claude statusline** | Auto-provisions a statusline script showing model/context/cost |
+| 🖥️ **Claude statusline** | Auto-provisions a statusline script showing model/context/cost and persisting limit snapshots |
 
 ---
 
@@ -100,6 +100,7 @@ cd ~/side-project      && claude   # ← uses "personal" profile
 # 5. Inspect current context
 cloak profile show
 cloak profile account work
+cloak profile limits work
 ```
 
 `cloak profile account <name>` inspects each configured CLI home inside the profile and prints the
@@ -122,6 +123,14 @@ claude -> credentials detected, but account identifier unavailable (plan: max)
 codex -> Jane Doe <jane@example.com>
 gemini -> Gem User <gem@example.com>
 ```
+
+`cloak profile limits <name>` reads the latest local limit snapshots available for that profile:
+
+- `claude`: reads `claude/usage-limits.json`, which is populated by the default Claude statusline
+  script after Claude receives at least one response in that profile. It shows the latest 5-hour
+  and 7-day subscription usage percentages plus reset timestamps.
+- `codex`: reads the newest `token_count` event under `codex/sessions` and shows the recorded
+  usage windows, remaining percentages, and reset timestamps.
 
 ---
 
@@ -209,6 +218,7 @@ cloak exec <cli> [--profile <name>] [args...]
 cloak use <profile>                Write .cloak in current directory
 cloak profile list                 List all profiles
 cloak profile account <name>       Show which account each CLI is using inside a profile
+cloak profile limits <name>        Show Claude/Codex usage percentages, remaining budget, and reset times
 cloak profile create <name>        Create profile dirs (+ Claude statusline template on Unix)
 cloak profile delete <name> [-y]   Delete a profile
 cloak profile show                 Show resolved profile and env paths for each CLI
@@ -259,7 +269,10 @@ When you create a profile on Unix, `cloak` provisions a statusline script inside
 }
 ```
 
-The script reads Claude's stdin JSON and prints a compact line with **model / context tokens / cost** (requires `jq`). Existing `settings.json` with a `statusLine` key is never overwritten.
+The script reads Claude's stdin JSON, prints a compact line with **model / context tokens / cost**
+(requires `jq`), and persists the latest Claude subscription `rate_limits` snapshot to
+`usage-limits.json` for `cloak profile limits`. Existing `settings.json` with a `statusLine` key is
+never overwritten.
 
 ---
 
