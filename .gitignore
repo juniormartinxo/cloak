@@ -25,5 +25,7 @@ Cargo.lock
 *.swo
 
 start.md
-.cloak
+/.cloak
+/AGENTS.md
+/CLAUDE.md
 .gitnexus
