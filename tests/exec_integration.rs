@@ -550,24 +550,42 @@ mod unix_exec_tests {
             stdout.contains("Profile 'work'"),
             "missing profile header:\n{stdout}"
         );
+        assert!(stdout.contains("Codex"), "missing codex summary:\n{stdout}");
         assert!(
-            stdout.contains("codex -> usage snapshot available (plan: team)"),
-            "missing codex summary:\n{stdout}"
+            stdout.contains("  Status: usage snapshot available"),
+            "missing codex status:\n{stdout}"
         );
         assert!(
-            stdout.contains("codex observed at -> 2026-03-28T15:23:12.299Z"),
+            stdout.contains("  Details: plan: team"),
+            "missing codex detail:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("  Observed: 2026-03-28T15:23:12.299Z"),
             "missing observed timestamp:\n{stdout}"
         );
         assert!(
-            stdout.contains(
-                "codex primary (5h) -> used 1%, remaining 99%, resets 2026-03-28 17:42:39 UTC"
-            ),
+            stdout.contains("  Limit: Codex Team"),
+            "missing limit label:\n{stdout}"
+        );
+        assert!(stdout.contains("╭"), "missing table border:\n{stdout}");
+        assert!(
+            stdout.contains("primary"),
             "missing primary limit window:\n{stdout}"
         );
         assert!(
-            stdout.contains(
-                "codex secondary (1w) -> used 30%, remaining 70%, resets 2026-04-03 13:36:17 UTC"
-            ),
+            stdout.contains("5h"),
+            "missing primary window shorthand:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("99%"),
+            "missing remaining percentage:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("2026-03-28 17:42:39 UTC"),
+            "missing primary reset timestamp:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("secondary"),
             "missing secondary limit window:\n{stdout}"
         );
     }
@@ -629,23 +647,36 @@ mod unix_exec_tests {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.contains("claude -> usage snapshot available (plan: team, tier: default_raven)"),
+            stdout.contains("Claude"),
             "missing claude summary:\n{stdout}"
         );
         assert!(
-            stdout.contains("claude observed at -> 2026-03-28T18:12:44Z"),
-            "missing claude observed timestamp:\n{stdout}"
+            stdout.contains("  Status: usage snapshot available"),
+            "missing claude status:\n{stdout}"
         );
         assert!(
-            stdout.contains(
-                "claude five_hour (5h) -> used 12.5%, remaining 87.5%, resets 2026-03-28 17:42:39 UTC"
-            ),
+            stdout.contains("  Details: plan: team, tier: default_raven"),
+            "missing claude details:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("  Observed: 2026-03-28T18:12:44Z"),
+            "missing claude observed timestamp:\n{stdout}"
+        );
+        assert!(stdout.contains("╭"), "missing table border:\n{stdout}");
+        assert!(
+            stdout.contains("five_hour"),
             "missing claude five-hour window:\n{stdout}"
         );
         assert!(
-            stdout.contains(
-                "claude seven_day (1w) -> used 37%, remaining 63%, resets 2026-04-03 13:36:17 UTC"
-            ),
+            stdout.contains("12.5%"),
+            "missing claude used percentage:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("2026-03-28 17:42:39 UTC"),
+            "missing claude reset timestamp:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("seven_day"),
             "missing claude seven-day window:\n{stdout}"
         );
     }
