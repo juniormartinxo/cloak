@@ -192,3 +192,183 @@ fn warn_mark() -> String {
 fn info_mark() -> String {
     "•".blue().to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    use super::{collect_dirs, gemini_credentials_hint, has_credentials_hint};
+
+    #[test]
+    fn test_has_credentials_hint_detects_claude_credentials() {
+        let tmp = tempdir().expect("tempdir");
+        let cli_dir = tmp.path();
+        fs::write(cli_dir.join(".credentials.json"), "{}").expect("write");
+
+        assert!(has_credentials_hint("claude", cli_dir).expect("check"));
+    }
+
+    #[test]
+    fn test_has_credentials_hint_reports_absent_claude_credentials() {
+        let tmp = tempdir().expect("tempdir");
+
+        assert!(!has_credentials_hint("claude", tmp.path()).expect("check"));
+    }
+
+    #[test]
+    fn test_has_credentials_hint_detects_codex_auth() {
+        let tmp = tempdir().expect("tempdir");
+        let cli_dir = tmp.path();
+        fs::write(cli_dir.join("auth.json"), "{}").expect("write");
+
+        assert!(has_credentials_hint("codex", cli_dir).expect("check"));
+    }
+
+    #[test]
+    fn test_has_credentials_hint_reports_absent_codex_auth() {
+        let tmp = tempdir().expect("tempdir");
+
+        assert!(!has_credentials_hint("codex", tmp.path()).expect("check"));
+    }
+
+    #[test]
+    fn test_has_credentials_hint_detects_unknown_cli_with_files() {
+        let tmp = tempdir().expect("tempdir");
+        let cli_dir = tmp.path();
+        fs::write(cli_dir.join("some-config.json"), "{}").expect("write");
+
+        assert!(has_credentials_hint("aider", cli_dir).expect("check"));
+    }
+
+    #[test]
+    fn test_has_credentials_hint_reports_empty_unknown_cli_dir() {
+        let tmp = tempdir().expect("tempdir");
+
+        assert!(!has_credentials_hint("aider", tmp.path()).expect("check"));
+    }
+
+    #[test]
+    fn test_gemini_credentials_hint_detects_oauth_creds() {
+        let tmp = tempdir().expect("tempdir");
+        let gemini_home = tmp.path().join(".gemini");
+        fs::create_dir_all(&gemini_home).expect("mkdir");
+        fs::write(gemini_home.join("oauth_creds.json"), "{}").expect("write");
+
+        assert!(gemini_credentials_hint(tmp.path()).expect("check"));
+    }
+
+    #[test]
+    fn test_gemini_credentials_hint_detects_api_key_in_env() {
+        let tmp = tempdir().expect("tempdir");
+        let gemini_home = tmp.path().join(".gemini");
+        fs::create_dir_all(&gemini_home).expect("mkdir");
+        fs::write(gemini_home.join(".env"), "GEMINI_API_KEY=secret\n").expect("write");
+
+        assert!(gemini_credentials_hint(tmp.path()).expect("check"));
+    }
+
+    #[test]
+    fn test_gemini_credentials_hint_detects_google_api_key_in_env() {
+        let tmp = tempdir().expect("tempdir");
+        let gemini_home = tmp.path().join(".gemini");
+        fs::create_dir_all(&gemini_home).expect("mkdir");
+        fs::write(gemini_home.join(".env"), "GOOGLE_API_KEY=secret\n").expect("write");
+
+        assert!(gemini_credentials_hint(tmp.path()).expect("check"));
+    }
+
+    #[test]
+    fn test_gemini_credentials_hint_ignores_env_without_api_key() {
+        let tmp = tempdir().expect("tempdir");
+        let gemini_home = tmp.path().join(".gemini");
+        fs::create_dir_all(&gemini_home).expect("mkdir");
+        fs::write(gemini_home.join(".env"), "OTHER_VAR=value\n").expect("write");
+
+        assert!(!gemini_credentials_hint(tmp.path()).expect("check"));
+    }
+
+    #[test]
+    fn test_gemini_credentials_hint_detects_selected_auth_type_in_settings() {
+        let tmp = tempdir().expect("tempdir");
+        let gemini_home = tmp.path().join(".gemini");
+        fs::create_dir_all(&gemini_home).expect("mkdir");
+
+        let settings = json!({
+            "security": {
+                "auth": {
+                    "selectedType": "oauth"
+                }
+            }
+        });
+        fs::write(gemini_home.join("settings.json"), settings.to_string()).expect("write");
+
+        assert!(gemini_credentials_hint(tmp.path()).expect("check"));
+    }
+
+    #[test]
+    fn test_gemini_credentials_hint_detects_legacy_selected_auth_type() {
+        let tmp = tempdir().expect("tempdir");
+        let gemini_home = tmp.path().join(".gemini");
+        fs::create_dir_all(&gemini_home).expect("mkdir");
+
+        let settings = json!({ "selectedAuthType": "api_key" });
+        fs::write(gemini_home.join("settings.json"), settings.to_string()).expect("write");
+
+        assert!(gemini_credentials_hint(tmp.path()).expect("check"));
+    }
+
+    #[test]
+    fn test_gemini_credentials_hint_ignores_empty_selected_type() {
+        let tmp = tempdir().expect("tempdir");
+        let gemini_home = tmp.path().join(".gemini");
+        fs::create_dir_all(&gemini_home).expect("mkdir");
+
+        let settings = json!({
+            "security": {
+                "auth": {
+                    "selectedType": "  "
+                }
+            }
+        });
+        fs::write(gemini_home.join("settings.json"), settings.to_string()).expect("write");
+
+        assert!(!gemini_credentials_hint(tmp.path()).expect("check"));
+    }
+
+    #[test]
+    fn test_gemini_credentials_hint_reports_no_credentials_when_gemini_dir_is_absent() {
+        let tmp = tempdir().expect("tempdir");
+
+        assert!(!gemini_credentials_hint(tmp.path()).expect("check"));
+    }
+
+    #[test]
+    fn test_collect_dirs_returns_only_directories() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        fs::create_dir(root.join("alpha")).expect("mkdir");
+        fs::create_dir(root.join("beta")).expect("mkdir");
+        fs::write(root.join("file.txt"), "data").expect("write");
+
+        let mut dirs = collect_dirs(root).expect("collect");
+        dirs.sort();
+
+        let names: Vec<&str> = dirs
+            .iter()
+            .filter_map(|d| d.file_name().and_then(|n| n.to_str()))
+            .collect();
+        assert_eq!(names, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn test_collect_dirs_returns_empty_for_empty_directory() {
+        let tmp = tempdir().expect("tempdir");
+
+        let dirs = collect_dirs(tmp.path()).expect("collect");
+        assert!(dirs.is_empty());
+    }
+}
