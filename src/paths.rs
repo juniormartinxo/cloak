@@ -162,6 +162,83 @@ mod tests {
         assert!(validate_cli_name("claude\\dev").is_err());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_ensure_secure_dir_creates_dir_with_0700_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target = tmp.path().join("secure");
+
+        super::ensure_secure_dir(&target).expect("ensure");
+        assert!(target.is_dir());
+
+        let mode = std::fs::metadata(&target)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_ensure_secure_dir_creates_nested_dirs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target = tmp.path().join("a/b/c");
+
+        super::ensure_secure_dir(&target).expect("ensure");
+        assert!(target.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_set_owner_only_dir_applies_0700() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target = tmp.path().join("dir");
+        std::fs::create_dir(&target).expect("mkdir");
+
+        super::set_owner_only_dir(&target).expect("set perms");
+
+        let mode = std::fs::metadata(&target)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_set_owner_only_file_applies_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file = tmp.path().join("secret.txt");
+        std::fs::write(&file, "data").expect("write");
+
+        super::set_owner_only_file(&file).expect("set perms");
+
+        let mode = std::fs::metadata(&file)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn test_profile_cli_dir_rejects_invalid_profile_name() {
+        assert!(super::profile_cli_dir("../escape", "claude").is_err());
+    }
+
+    #[test]
+    fn test_profile_cli_dir_rejects_invalid_cli_name() {
+        assert!(super::profile_cli_dir("work", "../escape").is_err());
+    }
+
     #[test]
     fn test_validate_cli_name_rejects_invalid_values() {
         assert!(validate_cli_name("").is_err());
