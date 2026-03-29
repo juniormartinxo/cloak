@@ -28,5 +28,5 @@ start.md
 /.cloak
 /AGENTS.md
 /CLAUDE.md
-/.claude/
+.claude/*
 .gitnexus
