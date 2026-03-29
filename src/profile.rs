@@ -150,6 +150,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_write_cloak_file_creates_readable_file() {
+        let tmp = tempdir().expect("tempdir");
+        let dir = tmp.path();
+
+        let path = super::write_cloak_file(dir, "work").expect("write");
+        assert_eq!(path, dir.join(".cloak"));
+
+        let content = fs::read_to_string(&path).expect("read");
+        assert_eq!(content, "profile = \"work\"\n");
+
+        let found = find_cloak_file(dir).expect("find");
+        let (profile, _) = found.expect("must find .cloak");
+        assert_eq!(profile, "work");
+    }
+
+    #[test]
+    fn test_write_cloak_file_overwrites_existing() {
+        let tmp = tempdir().expect("tempdir");
+        let dir = tmp.path();
+
+        super::write_cloak_file(dir, "old").expect("write first");
+        super::write_cloak_file(dir, "new").expect("write second");
+
+        let found = find_cloak_file(dir).expect("find");
+        let (profile, _) = found.expect("must find .cloak");
+        assert_eq!(profile, "new");
+    }
+
+    #[test]
+    fn test_resolve_profile_uses_cloak_file_when_present() {
+        let tmp = tempdir().expect("tempdir");
+        let dir = tmp.path();
+        fs::write(dir.join(".cloak"), "profile = \"work\"\n").expect("write");
+
+        let resolved = resolve_profile(dir, "default").expect("resolve");
+        assert_eq!(resolved.name, "work");
+        assert!(matches!(resolved.source, ProfileSource::CloakFile(_)));
+    }
+
+    #[test]
+    fn test_find_cloak_returns_none_for_empty_tree() {
+        let tmp = tempdir().expect("tempdir");
+        let deep = tmp.path().join("a/b/c");
+        fs::create_dir_all(&deep).expect("mkdir");
+
+        let found = find_cloak_file(&deep).expect("find");
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn test_find_cloak_errors_on_empty_profile_name() {
+        let tmp = tempdir().expect("tempdir");
+        fs::write(tmp.path().join(".cloak"), "profile = \"\"\n").expect("write");
+
+        let err = find_cloak_file(tmp.path()).expect_err("should fail");
+        assert!(
+            err.to_string().contains("cannot be empty"),
+            "unexpected: {err}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_find_cloak_keeps_logical_symlink_path() {
