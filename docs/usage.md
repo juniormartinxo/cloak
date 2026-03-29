@@ -60,9 +60,15 @@ Typical output:
 
 ```text
 Profile 'work'
-claude -> credentials detected, but account identifier unavailable (plan: max)
-codex -> Jane Doe <jane@example.com>
-gemini -> Gem User <gem@example.com>
+
+Accounts
+╭────────┬──────────────────────────────────────────────────────────────────────╮
+│ CLI    ┆ Account                                                              │
+╞════════╪══════════════════════════════════════════════════════════════════════╡
+│ Claude ┆ credentials detected, but account identifier unavailable (plan: max) │
+│ Codex  ┆ Jane Doe <jane@example.com>                                          │
+│ Gemini ┆ Gem User <gem@example.com>                                           │
+╰────────┴──────────────────────────────────────────────────────────────────────╯
 ```
 
 How `cloak` detects this:
