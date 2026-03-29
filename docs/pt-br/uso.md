@@ -90,14 +90,29 @@ Saida tipica:
 
 ```text
 Profile 'work'
-claude -> usage snapshot available (plan: team, tier: default_raven)
-claude observed at -> 2026-03-28T18:12:44Z
-claude five_hour (5h) -> used 12.5%, remaining 87.5%, resets 2026-03-28 17:42:39 UTC
-claude seven_day (1w) -> used 37%, remaining 63%, resets 2026-04-03 13:36:17 UTC
-codex -> usage snapshot available (plan: team)
-codex observed at -> 2026-03-28T15:23:12.299Z
-codex primary (5h) -> used 1%, remaining 99%, resets 2026-03-28 17:42:39 UTC
-codex secondary (1w) -> used 30%, remaining 70%, resets 2026-04-03 13:36:17 UTC
+
+Claude
+  Status: usage snapshot available
+  Details: plan: team, tier: default_raven
+  Observed: 2026-03-28T18:12:44Z
+  ╭───────────┬────────┬───────┬───────────┬─────────────────────────╮
+  │ Limit     ┆ Window ┆  Used ┆ Remaining ┆ Resets                  │
+  ╞═══════════╪════════╪═══════╪═══════════╪═════════════════════════╡
+  │ five_hour ┆ 5h     ┆ 12.5% ┆     87.5% ┆ 2026-03-28 17:42:39 UTC │
+  │ seven_day ┆ 1w     ┆   37% ┆       63% ┆ 2026-04-03 13:36:17 UTC │
+  ╰───────────┴────────┴───────┴───────────┴─────────────────────────╯
+
+Codex
+  Status: usage snapshot available
+  Details: plan: team
+  Observed: 2026-03-28T15:23:12.299Z
+  Limit: Codex Team
+  ╭───────────┬────────┬──────┬───────────┬─────────────────────────╮
+  │ Limit     ┆ Window ┆ Used ┆ Remaining ┆ Resets                  │
+  ╞═══════════╪════════╪══════╪═══════════╪═════════════════════════╡
+  │ primary   ┆ 5h     ┆   1% ┆       99% ┆ 2026-03-28 17:42:39 UTC │
+  │ secondary ┆ 1w     ┆  30% ┆       70% ┆ 2026-04-03 13:36:17 UTC │
+  ╰───────────┴────────┴──────┴───────────┴─────────────────────────╯
 ```
 
 Origem dos snapshots:
