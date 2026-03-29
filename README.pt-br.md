@@ -48,7 +48,7 @@ Sem wrappers rodando em segundo plano. Sem daemons. Sem estado persistente. Apen
 | 👤 **Inspeção de conta** | Mostra com qual conta cada CLI do perfil parece estar autenticada |
 | 🩺 **Comando doctor** | Valida a configuração, binários, estrutura do perfil e dicas de credenciais |
 | 💻 **Completions de shell** | Bash, Zsh, Fish, PowerShell e Elvish |
-| 🖥️ **Statusline do Claude** | Provisiona automaticamente um script de statusline mostrando modelo/contexto/custo |
+| 🖥️ **Statusline do Claude** | Provisiona automaticamente um script de statusline mostrando modelo/contexto/custo e persistindo snapshots de limites |
 
 ---
 
@@ -96,6 +96,7 @@ cd ~/side-project      && claude   # ← usa o perfil "personal"
 # 5. Inspecione o contexto atual
 cloak profile show
 cloak profile account work
+cloak profile limits work
 ```
 
 `cloak profile account <nome>` inspeciona cada home de CLI configurada dentro do perfil e imprime o
@@ -118,6 +119,14 @@ claude -> credentials detected, but account identifier unavailable (plan: max)
 codex -> Jane Doe <jane@example.com>
 gemini -> Gem User <gem@example.com>
 ```
+
+`cloak profile limits <nome>` le os snapshots locais de limites disponiveis naquele perfil:
+
+- `claude`: le `claude/usage-limits.json`, preenchido pelo statusline padrao do Claude depois que o
+  Claude recebe pelo menos uma resposta naquele perfil. Mostra os percentuais mais recentes das
+  janelas de 5 horas e 7 dias, alem dos timestamps de reset.
+- `codex`: le o evento `token_count` mais recente em `codex/sessions` e mostra as janelas
+  registradas, o percentual restante e os timestamps de reset.
 
 ---
 
@@ -207,6 +216,7 @@ cloak exec <cli> [--profile <nome>] [args...]
 cloak use <profile>                Escreve .cloak no diretório atual
 cloak profile list                 Lista todos os perfis
 cloak profile account <nome>       Mostra qual conta cada CLI esta usando dentro de um perfil
+cloak profile limits <nome>        Mostra uso/restante de Claude/Codex e quando os limites resetam
 cloak profile create <nome>        Cria diretórios de perfil (+ template de statusline do Claude no Unix)
 cloak profile delete <nome> [-y]   Deleta um perfil
 cloak profile show                 Mostra o perfil resolvido e caminhos de env para cada CLI
@@ -257,7 +267,10 @@ Quando você cria um perfil no Unix, o `cloak` provisiona um script de statuslin
 }
 ```
 
-O script lê o stdin em JSON do Claude e imprime uma linha compacta com **modelo / tokens de contexto / custo** (requer `jq`). Um `settings.json` existente com uma chave `statusLine` nunca é sobrescrito.
+O script le o stdin em JSON do Claude, imprime uma linha compacta com **modelo / tokens de
+contexto / custo** (requer `jq`) e persiste o snapshot mais recente de `rate_limits` do Claude em
+`usage-limits.json` para o `cloak profile limits`. Um `settings.json` existente com uma chave
+`statusLine` nunca e sobrescrito.
 
 ---
 
