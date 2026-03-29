@@ -15,6 +15,11 @@ use std::{
 use clap::Parser;
 use clap_complete::generate;
 use color_eyre::eyre::{eyre, Context, Result};
+use comfy_table::{
+    modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL_CONDENSED, Cell, CellAlignment,
+    ContentArrangement, Table,
+};
+use owo_colors::OwoColorize;
 use serde_json::{json, Value};
 
 use crate::{
@@ -433,31 +438,37 @@ fn show_profile_limits(profile: &str, cfg: &config::Config) -> Result<()> {
         return Err(eyre!("profile '{}' does not exist", profile));
     }
 
-    println!("Profile '{}'", profile);
+    println!("{}", format_profile_limits_heading(profile));
 
     let mut rendered_any = false;
+    let mut rendered_sections = 0usize;
 
     if cfg.cli.contains_key("claude") {
         let provision_result =
             provision_default_claude_statusline(&paths::profile_dir(profile)?, cfg)?;
 
+        print_limit_section_header("claude", &mut rendered_sections);
         match inspect_profile_claude_limits(profile, cfg)? {
             ClaudeRateLimitStatus::Available(snapshot) => {
                 print_claude_limits_snapshot(&snapshot);
             }
             ClaudeRateLimitStatus::NoUsageData => {
-                println!("claude -> authenticated, but no local usage snapshot was found yet");
+                print_limit_field(
+                    "Status",
+                    "authenticated, but no local usage snapshot was found yet",
+                );
                 if provision_result.script_created
                     || provision_result.script_updated
                     || provision_result.settings_updated
                 {
-                    println!(
-                        "claude note -> snapshot support was refreshed; open or continue a Claude session to populate usage data"
+                    print_limit_field(
+                        "Note",
+                        "snapshot support was refreshed; open or continue a Claude session to populate usage data",
                     );
                 }
             }
             ClaudeRateLimitStatus::NotAuthenticated => {
-                println!("claude -> not authenticated");
+                print_limit_field("Status", "not authenticated");
             }
             ClaudeRateLimitStatus::NotConfigured => {}
         }
@@ -465,13 +476,17 @@ fn show_profile_limits(profile: &str, cfg: &config::Config) -> Result<()> {
     }
 
     if cfg.cli.contains_key("codex") {
+        print_limit_section_header("codex", &mut rendered_sections);
         match inspect_profile_codex_limits(profile, cfg)? {
             CodexRateLimitStatus::Available(snapshot) => print_codex_limits_snapshot(&snapshot),
             CodexRateLimitStatus::NoUsageData => {
-                println!("codex -> authenticated, but no local usage snapshot was found yet");
+                print_limit_field(
+                    "Status",
+                    "authenticated, but no local usage snapshot was found yet",
+                );
             }
             CodexRateLimitStatus::NotAuthenticated => {
-                println!("codex -> not authenticated");
+                print_limit_field("Status", "not authenticated");
             }
             CodexRateLimitStatus::NotConfigured => {}
         }
@@ -506,21 +521,46 @@ fn print_claude_limits_snapshot(snapshot: &ClaudeRateLimitSnapshot) {
     );
 
     match detail {
-        Some(detail) => println!("claude -> usage snapshot available ({detail})"),
-        None => println!("claude -> usage snapshot available"),
+        Some(detail) => {
+            print_limit_field("Status", "usage snapshot available");
+            print_limit_field("Details", &detail);
+        }
+        None => print_limit_field("Status", "usage snapshot available"),
     }
 
-    println!("claude observed at -> {}", snapshot.observed_at);
-
-    for window in &snapshot.windows {
-        print_usage_window(
-            "claude",
-            window.label,
-            window.window_minutes,
-            window.used_percent,
-            window.resets_at,
+    print_limit_field("Observed", &snapshot.observed_at);
+    if !snapshot.windows.is_empty() {
+        println!(
+            "{}",
+            build_usage_windows_table(snapshot.windows.iter().map(|window| {
+                (
+                    window.label,
+                    window.window_minutes,
+                    window.used_percent,
+                    window.resets_at,
+                )
+            }))
         );
     }
+}
+
+fn print_limit_section_header(subject: &str, rendered_sections: &mut usize) {
+    if *rendered_sections > 0 {
+        println!();
+    }
+
+    let title = format_limit_section_title(subject);
+    println!("{title}");
+    *rendered_sections += 1;
+}
+
+fn print_limit_field(label: &str, value: &str) {
+    let label = if io::stdout().is_terminal() {
+        format!("  {}", label.bold().bright_black())
+    } else {
+        format!("  {label}")
+    };
+    println!("{label}: {value}");
 }
 
 fn format_limit_subject_detail(
@@ -539,48 +579,86 @@ fn format_limit_subject_detail(
 
 fn print_codex_limits_snapshot(snapshot: &CodexRateLimitSnapshot) {
     match snapshot.plan_type.as_deref() {
-        Some(plan_type) => println!("codex -> usage snapshot available (plan: {plan_type})"),
-        None => println!("codex -> usage snapshot available"),
+        Some(plan_type) => {
+            print_limit_field("Status", "usage snapshot available");
+            print_limit_field("Details", &format!("plan: {plan_type}"));
+        }
+        None => print_limit_field("Status", "usage snapshot available"),
     }
 
-    println!("codex observed at -> {}", snapshot.observed_at);
+    print_limit_field("Observed", &snapshot.observed_at);
 
     if let Some(limit_name) = snapshot.limit_name.as_deref() {
-        println!("codex limit name -> {}", limit_name);
+        print_limit_field("Limit", limit_name);
     } else if let Some(limit_id) = snapshot.limit_id.as_deref() {
-        println!("codex limit id -> {}", limit_id);
+        print_limit_field("Limit", limit_id);
     }
 
-    for window in &snapshot.windows {
-        print_usage_window(
-            "codex",
-            window.label,
-            window.window_minutes,
-            window.used_percent,
-            window.resets_at,
+    if !snapshot.windows.is_empty() {
+        println!(
+            "{}",
+            build_usage_windows_table(snapshot.windows.iter().map(|window| {
+                (
+                    window.label,
+                    window.window_minutes,
+                    window.used_percent,
+                    window.resets_at,
+                )
+            }))
         );
     }
 
     if let Some(credits) = snapshot.credits.as_ref() {
-        println!("codex credits -> {}", format_codex_credits(credits));
+        print_limit_field("Credits", &format_codex_credits(credits));
     }
 }
 
-fn print_usage_window(
-    subject: &str,
-    label: &str,
-    window_minutes: u64,
-    used_percent: f64,
-    resets_at: i64,
-) {
-    let remaining_percent = (100.0 - used_percent).clamp(0.0, 100.0);
-    println!(
-        "{subject} {label} ({}) -> used {}, remaining {}, resets {}",
-        format_window_minutes(window_minutes),
-        format_percent(used_percent),
-        format_percent(remaining_percent),
-        format_unix_timestamp_utc(resets_at),
-    );
+fn format_profile_limits_heading(profile: &str) -> String {
+    let heading = format!("Profile '{profile}'");
+    if io::stdout().is_terminal() {
+        heading.bold().underline().to_string()
+    } else {
+        heading
+    }
+}
+
+fn format_limit_section_title(subject: &str) -> String {
+    let title = match subject {
+        "claude" => "Claude",
+        "codex" => "Codex",
+        other => other,
+    };
+
+    if io::stdout().is_terminal() {
+        title.bold().cyan().to_string()
+    } else {
+        title.to_string()
+    }
+}
+
+fn build_usage_windows_table<'a, I>(windows: I) -> String
+where
+    I: IntoIterator<Item = (&'a str, u64, f64, i64)>,
+{
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL_CONDENSED)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec!["Limit", "Window", "Used", "Remaining", "Resets"]);
+
+    for (label, window_minutes, used_percent, resets_at) in windows {
+        let remaining_percent = (100.0 - used_percent).clamp(0.0, 100.0);
+        table.add_row(vec![
+            Cell::new(label),
+            Cell::new(format_window_minutes(window_minutes)),
+            Cell::new(format_percent(used_percent)).set_alignment(CellAlignment::Right),
+            Cell::new(format_percent(remaining_percent)).set_alignment(CellAlignment::Right),
+            Cell::new(format_unix_timestamp_utc(resets_at)),
+        ]);
+    }
+
+    table.to_string()
 }
 
 fn format_codex_credits(credits: &CodexCreditsSummary) -> String {
