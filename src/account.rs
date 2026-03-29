@@ -1,10 +1,15 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    io::{BufRead, BufReader},
+    path::{Path, PathBuf},
+};
 
 use base64::{
     engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD},
     Engine as _,
 };
 use color_eyre::eyre::{Context, Result};
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{config::Config, paths};
@@ -22,6 +27,65 @@ pub enum AccountStatus {
     NoCredentials,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct CodexRateLimitSnapshot {
+    pub observed_at: String,
+    pub plan_type: Option<String>,
+    pub limit_id: Option<String>,
+    pub limit_name: Option<String>,
+    pub windows: Vec<CodexRateLimitWindow>,
+    pub credits: Option<CodexCreditsSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CodexRateLimitWindow {
+    pub label: &'static str,
+    pub window_minutes: u64,
+    pub used_percent: f64,
+    pub resets_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexCreditsSummary {
+    pub used: Option<String>,
+    pub remaining: Option<String>,
+    pub total: Option<String>,
+    pub resets_at: Option<i64>,
+    pub opaque: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CodexRateLimitStatus {
+    Available(Box<CodexRateLimitSnapshot>),
+    NoUsageData,
+    NotAuthenticated,
+    NotConfigured,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClaudeRateLimitSnapshot {
+    pub observed_at: String,
+    pub plan_type: Option<String>,
+    pub rate_limit_tier: Option<String>,
+    pub windows: Vec<ClaudeRateLimitWindow>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClaudeRateLimitWindow {
+    pub label: &'static str,
+    pub window_minutes: u64,
+    pub used_percent: f64,
+    pub resets_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClaudeRateLimitStatus {
+    Available(Box<ClaudeRateLimitSnapshot>),
+    NoUsageData,
+    NotAuthenticated,
+    NotConfigured,
+}
+
 pub fn inspect_profile_accounts(profile: &str, cfg: &Config) -> Result<Vec<CliAccountInfo>> {
     paths::validate_profile_name(profile)?;
 
@@ -36,6 +100,28 @@ pub fn inspect_profile_accounts(profile: &str, cfg: &Config) -> Result<Vec<CliAc
     }
 
     Ok(accounts)
+}
+
+pub fn inspect_profile_codex_limits(profile: &str, cfg: &Config) -> Result<CodexRateLimitStatus> {
+    paths::validate_profile_name(profile)?;
+
+    if !cfg.cli.contains_key("codex") {
+        return Ok(CodexRateLimitStatus::NotConfigured);
+    }
+
+    let cli_dir = paths::profile_cli_dir(profile, "codex")?;
+    inspect_codex_limits(&cli_dir)
+}
+
+pub fn inspect_profile_claude_limits(profile: &str, cfg: &Config) -> Result<ClaudeRateLimitStatus> {
+    paths::validate_profile_name(profile)?;
+
+    if !cfg.cli.contains_key("claude") {
+        return Ok(ClaudeRateLimitStatus::NotConfigured);
+    }
+
+    let cli_dir = paths::profile_cli_dir(profile, "claude")?;
+    inspect_claude_limits(&cli_dir)
 }
 
 fn inspect_cli_account(cli_name: &str, cli_dir: &Path) -> Result<AccountStatus> {
@@ -130,6 +216,34 @@ fn inspect_codex(cli_dir: &Path) -> Result<AccountStatus> {
     })
 }
 
+fn inspect_codex_limits(cli_dir: &Path) -> Result<CodexRateLimitStatus> {
+    if let Some(snapshot) = latest_codex_rate_limit_snapshot(&cli_dir.join("sessions"))? {
+        return Ok(CodexRateLimitStatus::Available(Box::new(snapshot)));
+    }
+
+    if cli_dir.join("auth.json").exists() {
+        return Ok(CodexRateLimitStatus::NoUsageData);
+    }
+
+    Ok(CodexRateLimitStatus::NotAuthenticated)
+}
+
+fn inspect_claude_limits(cli_dir: &Path) -> Result<ClaudeRateLimitStatus> {
+    let snapshot_path = cli_dir.join("usage-limits.json");
+    if snapshot_path.exists() {
+        let raw = read_json(&snapshot_path)?;
+        if let Some(snapshot) = parse_claude_rate_limit_snapshot(&raw, cli_dir) {
+            return Ok(ClaudeRateLimitStatus::Available(Box::new(snapshot)));
+        }
+    }
+
+    if cli_dir.join(".credentials.json").exists() {
+        return Ok(ClaudeRateLimitStatus::NoUsageData);
+    }
+
+    Ok(ClaudeRateLimitStatus::NotAuthenticated)
+}
+
 fn inspect_gemini(cli_dir: &Path) -> Result<AccountStatus> {
     let gemini_home = cli_dir.join(".gemini");
     let oauth_path = gemini_home.join("oauth_creds.json");
@@ -202,6 +316,234 @@ fn inspect_unknown(cli_dir: &Path) -> Result<AccountStatus> {
     Ok(AccountStatus::NoCredentials)
 }
 
+fn latest_codex_rate_limit_snapshot(session_root: &Path) -> Result<Option<CodexRateLimitSnapshot>> {
+    if !session_root.exists() {
+        return Ok(None);
+    }
+
+    let mut session_files = collect_session_jsonl_files(session_root)?;
+    session_files.sort();
+
+    let mut latest: Option<CodexRateLimitSnapshot> = None;
+
+    for session_file in session_files {
+        let file = fs::File::open(&session_file)
+            .wrap_err_with(|| format!("failed opening {}", session_file.display()))?;
+        let reader = BufReader::new(file);
+
+        for line in reader.lines() {
+            let line =
+                line.wrap_err_with(|| format!("failed reading {}", session_file.display()))?;
+
+            let Some(snapshot) = parse_codex_rate_limit_snapshot(&line) else {
+                continue;
+            };
+
+            let should_replace = latest
+                .as_ref()
+                .is_none_or(|current| snapshot.observed_at > current.observed_at);
+            if should_replace {
+                latest = Some(snapshot);
+            }
+        }
+    }
+
+    Ok(latest)
+}
+
+fn collect_session_jsonl_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+
+    while let Some(dir) = pending.pop() {
+        for entry in
+            fs::read_dir(&dir).wrap_err_with(|| format!("failed reading {}", dir.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+                files.push(path);
+            }
+        }
+    }
+
+    Ok(files)
+}
+
+fn parse_codex_rate_limit_snapshot(raw: &str) -> Option<CodexRateLimitSnapshot> {
+    let parsed: SessionLogEntry = serde_json::from_str(raw).ok()?;
+    if parsed.entry_type.as_deref()? != "event_msg" {
+        return None;
+    }
+
+    let payload = parsed.payload?;
+    if payload.payload_type.as_deref()? != "token_count" {
+        return None;
+    }
+
+    let observed_at = parsed.timestamp?;
+    let rate_limits = payload.rate_limits?;
+
+    let mut windows = Vec::new();
+    if let Some(window) = rate_limits
+        .primary
+        .and_then(|value| value.into_window("primary"))
+    {
+        windows.push(window);
+    }
+    if let Some(window) = rate_limits
+        .secondary
+        .and_then(|value| value.into_window("secondary"))
+    {
+        windows.push(window);
+    }
+
+    Some(CodexRateLimitSnapshot {
+        observed_at,
+        plan_type: rate_limits
+            .plan_type
+            .filter(|value| !value.trim().is_empty()),
+        limit_id: rate_limits
+            .limit_id
+            .filter(|value| !value.trim().is_empty()),
+        limit_name: rate_limits
+            .limit_name
+            .filter(|value| !value.trim().is_empty()),
+        windows,
+        credits: rate_limits
+            .credits
+            .as_ref()
+            .and_then(extract_codex_credits_summary),
+    })
+}
+
+fn parse_claude_rate_limit_snapshot(
+    value: &Value,
+    cli_dir: &Path,
+) -> Option<ClaudeRateLimitSnapshot> {
+    let observed_at = value.pointer("/observed_at")?.as_str()?.to_string();
+
+    let mut windows = Vec::new();
+
+    if let Some(window) = value
+        .pointer("/rate_limits/five_hour")
+        .and_then(|window| parse_claude_window(window, "five_hour", 300))
+    {
+        windows.push(window);
+    }
+
+    if let Some(window) = value
+        .pointer("/rate_limits/seven_day")
+        .and_then(|window| parse_claude_window(window, "seven_day", 10_080))
+    {
+        windows.push(window);
+    }
+
+    if windows.is_empty() {
+        return None;
+    }
+
+    let (plan_type, rate_limit_tier) = read_claude_plan_metadata(cli_dir).ok().unwrap_or_default();
+
+    Some(ClaudeRateLimitSnapshot {
+        observed_at,
+        plan_type,
+        rate_limit_tier,
+        windows,
+    })
+}
+
+fn parse_claude_window(
+    value: &Value,
+    label: &'static str,
+    window_minutes: u64,
+) -> Option<ClaudeRateLimitWindow> {
+    Some(ClaudeRateLimitWindow {
+        label,
+        window_minutes,
+        used_percent: first_f64(value, &["/used_percentage", "/usedPercent"])?,
+        resets_at: first_i64(value, &["/resets_at", "/resetsAt"])?,
+    })
+}
+
+fn read_claude_plan_metadata(cli_dir: &Path) -> Result<(Option<String>, Option<String>)> {
+    let credentials_path = cli_dir.join(".credentials.json");
+    if !credentials_path.exists() {
+        return Ok((None, None));
+    }
+
+    let parsed = read_json(&credentials_path)?;
+    Ok((
+        first_nonempty_str(&parsed, &["/claudeAiOauth/subscriptionType"]).map(ToString::to_string),
+        first_nonempty_str(&parsed, &["/claudeAiOauth/rateLimitTier"]).map(ToString::to_string),
+    ))
+}
+
+fn extract_codex_credits_summary(value: &Value) -> Option<CodexCreditsSummary> {
+    if value.is_null() {
+        return None;
+    }
+
+    let summary = CodexCreditsSummary {
+        used: first_scalar_string(
+            value,
+            &[
+                "/used",
+                "/used_usd",
+                "/usedUsd",
+                "/spent",
+                "/spent_usd",
+                "/spentUsd",
+            ],
+        ),
+        remaining: first_scalar_string(
+            value,
+            &[
+                "/remaining",
+                "/remaining_usd",
+                "/remainingUsd",
+                "/available",
+                "/available_usd",
+                "/availableUsd",
+            ],
+        ),
+        total: first_scalar_string(
+            value,
+            &[
+                "/total",
+                "/total_usd",
+                "/totalUsd",
+                "/limit",
+                "/limit_usd",
+                "/limitUsd",
+                "/budget",
+                "/budget_usd",
+                "/budgetUsd",
+            ],
+        ),
+        resets_at: first_i64(value, &["/resets_at", "/resetsAt", "/reset_at", "/resetAt"]),
+        opaque: false,
+    };
+
+    if summary.used.is_some()
+        || summary.remaining.is_some()
+        || summary.total.is_some()
+        || summary.resets_at.is_some()
+    {
+        return Some(summary);
+    }
+
+    Some(CodexCreditsSummary {
+        used: None,
+        remaining: None,
+        total: None,
+        resets_at: None,
+        opaque: true,
+    })
+}
+
 fn read_json(path: &Path) -> Result<Value> {
     let raw =
         fs::read_to_string(path).wrap_err_with(|| format!("failed reading {}", path.display()))?;
@@ -243,6 +585,78 @@ fn first_nonempty_str<'a>(value: &'a Value, paths: &[&str]) -> Option<&'a str> {
     })
 }
 
+fn first_scalar_string(value: &Value, paths: &[&str]) -> Option<String> {
+    paths.iter().find_map(|path| match value.pointer(path) {
+        Some(Value::String(candidate)) if !candidate.trim().is_empty() => Some(candidate.clone()),
+        Some(Value::Number(candidate)) => Some(candidate.to_string()),
+        Some(Value::Bool(candidate)) => Some(candidate.to_string()),
+        _ => None,
+    })
+}
+
+fn first_i64(value: &Value, paths: &[&str]) -> Option<i64> {
+    paths.iter().find_map(|path| {
+        value.pointer(path).and_then(|candidate| match candidate {
+            Value::Number(value) => value.as_i64(),
+            Value::String(value) => value.parse().ok(),
+            _ => None,
+        })
+    })
+}
+
+fn first_f64(value: &Value, paths: &[&str]) -> Option<f64> {
+    paths.iter().find_map(|path| {
+        value.pointer(path).and_then(|candidate| match candidate {
+            Value::Number(value) => value.as_f64(),
+            Value::String(value) => value.parse().ok(),
+            _ => None,
+        })
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionLogEntry {
+    timestamp: Option<String>,
+    #[serde(rename = "type")]
+    entry_type: Option<String>,
+    payload: Option<TokenCountPayload>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenCountPayload {
+    #[serde(rename = "type")]
+    payload_type: Option<String>,
+    rate_limits: Option<RawRateLimits>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRateLimits {
+    limit_id: Option<String>,
+    limit_name: Option<String>,
+    plan_type: Option<String>,
+    primary: Option<RawRateLimitWindow>,
+    secondary: Option<RawRateLimitWindow>,
+    credits: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRateLimitWindow {
+    used_percent: Option<f64>,
+    window_minutes: Option<u64>,
+    resets_at: Option<i64>,
+}
+
+impl RawRateLimitWindow {
+    fn into_window(self, label: &'static str) -> Option<CodexRateLimitWindow> {
+        Some(CodexRateLimitWindow {
+            label,
+            window_minutes: self.window_minutes?,
+            used_percent: self.used_percent?,
+            resets_at: self.resets_at?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -251,7 +665,11 @@ mod tests {
     use serde_json::{json, Value};
     use tempfile::tempdir;
 
-    use super::{inspect_claude, inspect_codex, inspect_gemini, AccountStatus};
+    use super::{
+        inspect_claude, inspect_claude_limits, inspect_codex, inspect_codex_limits, inspect_gemini,
+        AccountStatus, ClaudeRateLimitSnapshot, ClaudeRateLimitStatus, ClaudeRateLimitWindow,
+        CodexCreditsSummary, CodexRateLimitSnapshot, CodexRateLimitStatus, CodexRateLimitWindow,
+    };
 
     #[test]
     fn test_inspect_codex_extracts_name_and_email_from_id_token() {
@@ -321,6 +739,198 @@ mod tests {
                     .to_string()
             }
         );
+    }
+
+    #[test]
+    fn test_inspect_codex_limits_reads_latest_session_snapshot() {
+        let tmp = tempdir().expect("tempdir");
+        let cli_dir = tmp.path();
+        let session_dir = cli_dir.join("sessions/2026/03/28");
+        fs::create_dir_all(&session_dir).expect("create sessions dir");
+        fs::write(cli_dir.join("auth.json"), r#"{"auth_mode":"chatgpt"}"#).expect("write auth");
+
+        let older = json!({
+            "timestamp": "2026-03-28T15:21:04.789Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "rate_limits": {
+                    "limit_id": "codex",
+                    "plan_type": "team",
+                    "primary": {
+                        "used_percent": 1.0,
+                        "window_minutes": 300,
+                        "resets_at": 1774719759i64
+                    },
+                    "secondary": {
+                        "used_percent": 29.0,
+                        "window_minutes": 10080,
+                        "resets_at": 1775223377i64
+                    },
+                    "credits": null
+                }
+            }
+        });
+
+        let newer = json!({
+            "timestamp": "2026-03-28T15:23:12.299Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "rate_limits": {
+                    "limit_id": "codex",
+                    "limit_name": "Codex Team",
+                    "plan_type": "team",
+                    "primary": {
+                        "used_percent": 1.0,
+                        "window_minutes": 300,
+                        "resets_at": 1774719759i64
+                    },
+                    "secondary": {
+                        "used_percent": 30.0,
+                        "window_minutes": 10080,
+                        "resets_at": 1775223377i64
+                    },
+                    "credits": {
+                        "used_usd": 12.5,
+                        "remaining_usd": 87.5,
+                        "limit_usd": 100,
+                        "resets_at": 1775223377i64
+                    }
+                }
+            }
+        });
+
+        fs::write(
+            session_dir.join("rollout-a.jsonl"),
+            format!("{}\n{}\n", older, newer),
+        )
+        .expect("write session");
+
+        let status = inspect_codex_limits(cli_dir).expect("inspect");
+        assert_eq!(
+            status,
+            CodexRateLimitStatus::Available(Box::new(CodexRateLimitSnapshot {
+                observed_at: "2026-03-28T15:23:12.299Z".to_string(),
+                plan_type: Some("team".to_string()),
+                limit_id: Some("codex".to_string()),
+                limit_name: Some("Codex Team".to_string()),
+                windows: vec![
+                    CodexRateLimitWindow {
+                        label: "primary",
+                        window_minutes: 300,
+                        used_percent: 1.0,
+                        resets_at: 1774719759,
+                    },
+                    CodexRateLimitWindow {
+                        label: "secondary",
+                        window_minutes: 10080,
+                        used_percent: 30.0,
+                        resets_at: 1775223377,
+                    },
+                ],
+                credits: Some(CodexCreditsSummary {
+                    used: Some("12.5".to_string()),
+                    remaining: Some("87.5".to_string()),
+                    total: Some("100".to_string()),
+                    resets_at: Some(1775223377),
+                    opaque: false,
+                }),
+            }))
+        );
+    }
+
+    #[test]
+    fn test_inspect_codex_limits_reports_no_usage_data_when_auth_exists() {
+        let tmp = tempdir().expect("tempdir");
+        let cli_dir = tmp.path();
+        fs::write(cli_dir.join("auth.json"), r#"{"auth_mode":"chatgpt"}"#).expect("write auth");
+
+        let status = inspect_codex_limits(cli_dir).expect("inspect");
+        assert_eq!(status, CodexRateLimitStatus::NoUsageData);
+    }
+
+    #[test]
+    fn test_inspect_codex_limits_reports_not_authenticated_without_auth_or_sessions() {
+        let tmp = tempdir().expect("tempdir");
+
+        let status = inspect_codex_limits(tmp.path()).expect("inspect");
+        assert_eq!(status, CodexRateLimitStatus::NotAuthenticated);
+    }
+
+    #[test]
+    fn test_inspect_claude_limits_reads_usage_snapshot() {
+        let tmp = tempdir().expect("tempdir");
+        let cli_dir = tmp.path();
+        let credentials = json!({
+            "claudeAiOauth": {
+                "subscriptionType": "team",
+                "rateLimitTier": "default_raven"
+            }
+        });
+        let snapshot = json!({
+            "observed_at": "2026-03-28T18:12:44Z",
+            "rate_limits": {
+                "five_hour": {
+                    "used_percentage": 12.5,
+                    "resets_at": 1774719759i64
+                },
+                "seven_day": {
+                    "used_percentage": 37.0,
+                    "resets_at": 1775223377i64
+                }
+            }
+        });
+
+        fs::write(cli_dir.join(".credentials.json"), credentials.to_string())
+            .expect("write .credentials.json");
+        fs::write(cli_dir.join("usage-limits.json"), snapshot.to_string())
+            .expect("write usage-limits.json");
+
+        let status = inspect_claude_limits(cli_dir).expect("inspect");
+        assert_eq!(
+            status,
+            ClaudeRateLimitStatus::Available(Box::new(ClaudeRateLimitSnapshot {
+                observed_at: "2026-03-28T18:12:44Z".to_string(),
+                plan_type: Some("team".to_string()),
+                rate_limit_tier: Some("default_raven".to_string()),
+                windows: vec![
+                    ClaudeRateLimitWindow {
+                        label: "five_hour",
+                        window_minutes: 300,
+                        used_percent: 12.5,
+                        resets_at: 1774719759,
+                    },
+                    ClaudeRateLimitWindow {
+                        label: "seven_day",
+                        window_minutes: 10_080,
+                        used_percent: 37.0,
+                        resets_at: 1775223377,
+                    },
+                ],
+            }))
+        );
+    }
+
+    #[test]
+    fn test_inspect_claude_limits_reports_no_usage_data_when_authenticated() {
+        let tmp = tempdir().expect("tempdir");
+        fs::write(
+            tmp.path().join(".credentials.json"),
+            r#"{"claudeAiOauth":{"subscriptionType":"team"}}"#,
+        )
+        .expect("write .credentials.json");
+
+        let status = inspect_claude_limits(tmp.path()).expect("inspect");
+        assert_eq!(status, ClaudeRateLimitStatus::NoUsageData);
+    }
+
+    #[test]
+    fn test_inspect_claude_limits_reports_not_authenticated_without_credentials_or_snapshot() {
+        let tmp = tempdir().expect("tempdir");
+
+        let status = inspect_claude_limits(tmp.path()).expect("inspect");
+        assert_eq!(status, ClaudeRateLimitStatus::NotAuthenticated);
     }
 
     fn fake_jwt(claims: Value) -> String {
