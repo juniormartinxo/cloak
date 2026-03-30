@@ -864,6 +864,206 @@ mod unix_exec_tests {
         );
     }
 
+    #[test]
+    fn mcp_install_codex_uses_codex_native_args_and_profile_home() {
+        let tmp = tempdir().expect("tempdir");
+        let bin_dir = tmp.path().join("bin");
+        let xdg_config_home = tmp.path().join("xdg");
+
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+
+        let mock_binary = create_mock_binary(&bin_dir);
+        write_mcp_config(&xdg_config_home, &mock_binary);
+
+        let output = Command::new(cloak_bin())
+            .arg("mcp")
+            .arg("install")
+            .arg("codex")
+            .arg("filesystem")
+            .arg("--profile")
+            .arg("work")
+            .arg("-e")
+            .arg("API_KEY=secret")
+            .arg("--")
+            .arg("npx")
+            .arg("@modelcontextprotocol/server-filesystem")
+            .arg("/tmp")
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak mcp install codex");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let expected_profile_home = xdg_config_home
+            .join("cloak")
+            .join("profiles")
+            .join("work")
+            .join("codex");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!("CODEX_HOME={}", expected_profile_home.display())),
+            "missing CODEX_HOME in stdout:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "ARGS=mcp add filesystem --env API_KEY=secret -- npx @modelcontextprotocol/server-filesystem /tmp"
+            ),
+            "missing native codex MCP args:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn mcp_install_claude_uses_claude_native_args_and_profile_home() {
+        let tmp = tempdir().expect("tempdir");
+        let bin_dir = tmp.path().join("bin");
+        let xdg_config_home = tmp.path().join("xdg");
+
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+
+        let mock_binary = create_mock_binary(&bin_dir);
+        write_mcp_config(&xdg_config_home, &mock_binary);
+
+        let output = Command::new(cloak_bin())
+            .arg("mcp")
+            .arg("install")
+            .arg("claude")
+            .arg("sentry")
+            .arg("--profile")
+            .arg("work")
+            .arg("--transport")
+            .arg("http")
+            .arg("--url")
+            .arg("https://mcp.sentry.dev/mcp")
+            .arg("-H")
+            .arg("Authorization: Bearer token")
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak mcp install claude");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let expected_profile_home = xdg_config_home
+            .join("cloak")
+            .join("profiles")
+            .join("work")
+            .join("claude");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!(
+                "CLAUDE_CONFIG_DIR={}",
+                expected_profile_home.display()
+            )),
+            "missing CLAUDE_CONFIG_DIR in stdout:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "ARGS=mcp add --scope user --transport http -H Authorization: Bearer token sentry https://mcp.sentry.dev/mcp"
+            ),
+            "missing native claude MCP args:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn mcp_install_all_profiles_runs_for_every_profile() {
+        let tmp = tempdir().expect("tempdir");
+        let bin_dir = tmp.path().join("bin");
+        let xdg_config_home = tmp.path().join("xdg");
+        let profiles_root = xdg_config_home.join("cloak").join("profiles");
+
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+        fs::create_dir_all(profiles_root.join("personal")).expect("create personal profile");
+        fs::create_dir_all(profiles_root.join("work")).expect("create work profile");
+
+        let mock_binary = create_mock_binary(&bin_dir);
+        write_mcp_config(&xdg_config_home, &mock_binary);
+
+        let output = Command::new(cloak_bin())
+            .arg("mcp")
+            .arg("install")
+            .arg("codex")
+            .arg("filesystem")
+            .arg("--all-profiles")
+            .arg("--")
+            .arg("npx")
+            .arg("server")
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak mcp install codex --all-profiles");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!(
+                "CODEX_HOME={}",
+                profiles_root.join("personal/codex").display()
+            )),
+            "missing personal CODEX_HOME:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!(
+                "CODEX_HOME={}",
+                profiles_root.join("work/codex").display()
+            )),
+            "missing work CODEX_HOME:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn mcp_install_rejects_unsupported_cli() {
+        let tmp = tempdir().expect("tempdir");
+        let bin_dir = tmp.path().join("bin");
+        let xdg_config_home = tmp.path().join("xdg");
+
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+
+        let mock_binary = create_mock_binary(&bin_dir);
+        write_unsupported_mcp_config(&xdg_config_home, &mock_binary);
+
+        let output = Command::new(cloak_bin())
+            .arg("mcp")
+            .arg("install")
+            .arg("gemini")
+            .arg("remote")
+            .arg("--transport")
+            .arg("http")
+            .arg("--url")
+            .arg("https://example.com/mcp")
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak mcp install gemini");
+
+        assert!(
+            !output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("does not have a known native MCP installation flow"),
+            "missing unsupported CLI error:\n{stderr}"
+        );
+    }
+
     fn cloak_bin() -> PathBuf {
         if let Some(path) = std::env::var_os("CARGO_BIN_EXE_cloak").map(PathBuf::from) {
             return path;
@@ -904,6 +1104,8 @@ mod unix_exec_tests {
         let script = r#"#!/bin/sh
 echo "MOCK_HOME=$MOCK_HOME"
 echo "GEMINI_CLI_HOME=$GEMINI_CLI_HOME"
+echo "CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR"
+echo "CODEX_HOME=$CODEX_HOME"
 echo "CURSOR_USER_DATA_DIR=$CURSOR_USER_DATA_DIR"
 echo "CURSOR_EXTENSIONS_DIR=$CURSOR_EXTENSIONS_DIR"
 if [ -z "${OPENAI_API_KEY+x}" ]; then
@@ -940,6 +1142,31 @@ echo "ARGS=$*"
         let config = format!(
             "[general]\ndefault_profile = \"{}\"\n\n[cli.mock]\nbinary = \"{}\"\nconfig_dir_env = \"MOCK_HOME\"\nremove_env_vars = [\"OPENAI_API_KEY\"]\n",
             default_profile,
+            mock_binary.display()
+        );
+
+        fs::write(cloak_dir.join("config.toml"), config).expect("write config.toml");
+    }
+
+    fn write_mcp_config(xdg_config_home: &Path, mock_binary: &Path) {
+        let cloak_dir = xdg_config_home.join("cloak");
+        fs::create_dir_all(&cloak_dir).expect("create cloak config dir");
+
+        let config = format!(
+            "[general]\ndefault_profile = \"personal\"\n\n[cli.claude]\nbinary = \"{}\"\nconfig_dir_env = \"CLAUDE_CONFIG_DIR\"\n\n[cli.codex]\nbinary = \"{}\"\nconfig_dir_env = \"CODEX_HOME\"\n",
+            mock_binary.display(),
+            mock_binary.display()
+        );
+
+        fs::write(cloak_dir.join("config.toml"), config).expect("write config.toml");
+    }
+
+    fn write_unsupported_mcp_config(xdg_config_home: &Path, mock_binary: &Path) {
+        let cloak_dir = xdg_config_home.join("cloak");
+        fs::create_dir_all(&cloak_dir).expect("create cloak config dir");
+
+        let config = format!(
+            "[general]\ndefault_profile = \"personal\"\n\n[cli.gemini]\nbinary = \"{}\"\nconfig_dir_env = \"GEMINI_CLI_HOME\"\n",
             mock_binary.display()
         );
 
