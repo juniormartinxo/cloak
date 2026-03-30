@@ -49,6 +49,7 @@ No wrappers running in background. No daemons. No persistent state. Just a clean
 | 🩺 **Doctor command** | Validates config, binaries, profile structure and credential hints |
 | 💻 **Shell completions** | Bash, Zsh, Fish, PowerShell and Elvish |
 | 🖥️ **Claude statusline** | Auto-provisions a statusline script showing model/context/cost and persisting limit snapshots |
+| 🔌 **MCP install helper** | Installs MCP servers through the native CLI syntax for supported tools and scopes them per profile |
 
 ---
 
@@ -101,6 +102,10 @@ cd ~/side-project      && claude   # ← uses "personal" profile
 cloak profile show
 cloak profile account work
 cloak profile limits work
+
+# 6. Install MCP servers in-profile
+cloak mcp install codex filesystem --profile work -- npx @modelcontextprotocol/server-filesystem /tmp
+cloak mcp install claude sentry --profile work --transport http --url https://mcp.sentry.dev/mcp -H "Authorization: Bearer token"
 ```
 
 `cloak profile account <name>` inspects each configured CLI home inside the profile and prints the
@@ -131,6 +136,32 @@ gemini -> Gem User <gem@example.com>
   and 7-day subscription usage percentages plus reset timestamps.
 - `codex`: reads the newest `token_count` event under `codex/sessions` and shows the recorded
   usage windows, remaining percentages, and reset timestamps.
+
+`cloak mcp install` installs MCP servers inside the selected `cloak` profile, using the native
+syntax of each supported CLI instead of a one-size-fits-all wrapper:
+
+- `codex`: maps to `codex mcp add ...`
+- `claude`: maps to `claude mcp add ...`
+- unsupported CLIs: fail with a clear error instead of guessing
+
+Examples:
+
+```bash
+# Codex stdio MCP in one profile
+cloak mcp install codex filesystem --profile work -- npx @modelcontextprotocol/server-filesystem /tmp
+
+# Codex HTTP MCP with bearer-token env var
+cloak mcp install codex sentry --profile work --transport http --url https://example.com/mcp --bearer-token-env-var SENTRY_TOKEN
+
+# Claude HTTP MCP with headers
+cloak mcp install claude sentry --profile work --transport http --url https://mcp.sentry.dev/mcp -H "Authorization: Bearer token"
+
+# Install the same MCP in every existing profile
+cloak mcp install codex filesystem --all-profiles -- npx @modelcontextprotocol/server-filesystem /tmp
+```
+
+If you omit both `--profile` and `--all-profiles` in an interactive terminal, `cloak` resolves the
+current profile first and then asks whether you want to apply the install to all profiles.
 
 ---
 
@@ -223,6 +254,7 @@ cloak profile create <name>        Create profile dirs (+ Claude statusline temp
 cloak profile delete <name> [-y]   Delete a profile
 cloak profile show                 Show resolved profile and env paths for each CLI
 cloak login <cli> [profile]        Run a CLI in profile context for interactive auth
+cloak mcp install <cli> <name>     Install an MCP server using the target CLI's native syntax
 cloak doctor                       Run health checks
 cloak completions <shell>          Print shell completion script
 ```
@@ -247,6 +279,7 @@ src/
 ├── cli.rs        — Argument structs and subcommand definitions
 ├── config.rs     — Config file parsing and defaults (serde + toml)
 ├── exec.rs       — Profile resolution + env setup + exec(2) wrapper
+├── mcp.rs        — Per-CLI MCP install adapters (`claude` / `codex`)
 ├── paths.rs      — XDG-compliant path resolution for config/profiles
 ├── profile.rs    — .cloak resolution and local profile file handling
 └── doctor.rs     — Health check diagnostics
