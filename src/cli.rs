@@ -1,4 +1,4 @@
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
 #[derive(Parser, Debug)]
@@ -46,6 +46,10 @@ pub enum Commands {
         profile: Option<String>,
     },
 
+    /// Manage MCP server installation for supported CLIs
+    #[command(subcommand)]
+    Mcp(McpCommands),
+
     /// Check config, binaries and profiles
     Doctor,
 
@@ -80,6 +84,58 @@ pub enum ProfileCommands {
     Show,
 }
 
+#[derive(Subcommand, Debug)]
+pub enum McpCommands {
+    /// Install an MCP server using the native CLI syntax for each supported tool
+    #[command(trailing_var_arg = true)]
+    Install {
+        /// Registered CLI name (for example: claude, codex)
+        cli: String,
+
+        /// MCP server name
+        name: String,
+
+        /// Optional explicit profile. If omitted, profile is resolved from CWD.
+        #[arg(long)]
+        profile: Option<String>,
+
+        /// Install for every existing profile instead of the resolved profile only
+        #[arg(long)]
+        all_profiles: bool,
+
+        /// MCP transport
+        #[arg(long, value_enum, default_value_t = McpTransport::Stdio)]
+        transport: McpTransport,
+
+        /// Streamable HTTP/SSE endpoint
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Environment variables for stdio MCP servers (`KEY=VALUE`)
+        #[arg(short = 'e', long = "env")]
+        env: Vec<String>,
+
+        /// Headers for HTTP/SSE MCP servers (`Name: value`)
+        #[arg(short = 'H', long = "header")]
+        header: Vec<String>,
+
+        /// Bearer token environment variable for Codex HTTP MCP servers
+        #[arg(long)]
+        bearer_token_env_var: Option<String>,
+
+        /// Stdio command forwarded after `--`
+        #[arg(allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum McpTransport {
+    Stdio,
+    Http,
+    Sse,
+}
+
 pub fn command_for_completions() -> clap::Command {
     Cli::command()
 }
@@ -88,7 +144,7 @@ pub fn command_for_completions() -> clap::Command {
 mod tests {
     use clap::Parser;
 
-    use super::{Cli, Commands, ProfileCommands};
+    use super::{Cli, Commands, McpCommands, McpTransport, ProfileCommands};
 
     #[test]
     fn test_exec_parses_forwarded_args() {
@@ -191,6 +247,93 @@ mod tests {
         match parsed.command {
             Commands::Use { profile } => assert_eq!(profile, "work"),
             _ => panic!("expected use command from init alias"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_install_parses_stdio_command() {
+        let parsed = Cli::parse_from([
+            "cloak",
+            "mcp",
+            "install",
+            "codex",
+            "filesystem",
+            "--profile",
+            "work",
+            "-e",
+            "API_KEY=secret",
+            "--",
+            "npx",
+            "@modelcontextprotocol/server-filesystem",
+            "/tmp",
+        ]);
+
+        match parsed.command {
+            Commands::Mcp(McpCommands::Install {
+                cli,
+                name,
+                profile,
+                all_profiles,
+                transport,
+                url,
+                env,
+                header,
+                bearer_token_env_var,
+                command,
+            }) => {
+                assert_eq!(cli, "codex");
+                assert_eq!(name, "filesystem");
+                assert_eq!(profile.as_deref(), Some("work"));
+                assert!(!all_profiles);
+                assert_eq!(transport, McpTransport::Stdio);
+                assert_eq!(url, None);
+                assert_eq!(env, vec!["API_KEY=secret"]);
+                assert!(header.is_empty());
+                assert_eq!(bearer_token_env_var, None);
+                assert_eq!(
+                    command,
+                    vec!["npx", "@modelcontextprotocol/server-filesystem", "/tmp",]
+                );
+            }
+            _ => panic!("expected mcp install command"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_install_parses_http_options() {
+        let parsed = Cli::parse_from([
+            "cloak",
+            "mcp",
+            "install",
+            "claude",
+            "sentry",
+            "--all-profiles",
+            "--transport",
+            "http",
+            "--url",
+            "https://mcp.sentry.dev/mcp",
+            "-H",
+            "Authorization: Bearer token",
+        ]);
+
+        match parsed.command {
+            Commands::Mcp(McpCommands::Install {
+                cli,
+                name,
+                all_profiles,
+                transport,
+                url,
+                header,
+                ..
+            }) => {
+                assert_eq!(cli, "claude");
+                assert_eq!(name, "sentry");
+                assert!(all_profiles);
+                assert_eq!(transport, McpTransport::Http);
+                assert_eq!(url.as_deref(), Some("https://mcp.sentry.dev/mcp"));
+                assert_eq!(header, vec!["Authorization: Bearer token"]);
+            }
+            _ => panic!("expected mcp install command"),
         }
     }
 }
