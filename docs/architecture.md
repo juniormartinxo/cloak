@@ -9,6 +9,7 @@
 - `src/profile.rs`: `.cloak` resolution and local profile-file handling.
 - `src/paths.rs`: XDG path helpers, permission helpers, and name validation.
 - `src/exec.rs`: environment preparation and target CLI execution.
+- `src/mcp.rs`: per-CLI MCP install adapters for supported native flows.
 - `src/doctor.rs`: health checks (binaries, profiles, credential hints).
 
 ## `exec` flow
@@ -41,6 +42,15 @@ Current CLI-specific detectors:
 - `gemini`: `gemini/.gemini/oauth_creds.json`, `gemini/.gemini/.env`,
   `gemini/.gemini/settings.json`
 - other CLIs: generic non-empty-directory detection
+
+## `mcp install` flow
+
+1. Resolve the requested profile, or the current-directory profile if `--profile` was omitted.
+2. In interactive terminals, ask whether the install should target all profiles when
+   `--all-profiles` was not passed.
+3. Validate the MCP request shape against the selected transport.
+4. Translate the request to the target CLI's native MCP syntax.
+5. Run the target CLI inside each selected profile home so the MCP config is written per profile.
 
 ## Security model
 
