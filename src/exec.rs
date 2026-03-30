@@ -12,54 +12,7 @@ use color_eyre::eyre::{eyre, Context, Result};
 use crate::{config::Config, paths};
 
 pub fn exec_cli(cli_name: &str, profile: &str, args: &[String], config: &Config) -> Result<()> {
-    let cli_cfg = config
-        .cli
-        .get(cli_name)
-        .ok_or_else(|| eyre!("CLI '{}' not configured in config.toml", cli_name))?;
-
-    let binary = which::which(&cli_cfg.binary).wrap_err_with(|| {
-        format!(
-            "'{}' not found in PATH. Install it or set cli.{}.binary in config.",
-            cli_cfg.binary, cli_name
-        )
-    })?;
-
-    let profile_dir = paths::profile_cli_dir(profile, cli_name)?;
-    ensure_profile_cli_dir(&profile_dir, profile, cli_name)?;
-    let template_context = TemplateContext {
-        cli_name,
-        profile,
-        profile_dir: &profile_dir,
-    };
-
-    let rendered_launch_args: Vec<String> = cli_cfg
-        .launch_args
-        .iter()
-        .map(|arg| render_template(arg, &template_context))
-        .collect();
-
-    let launch_args = resolve_effective_launch(cli_name, &binary, &rendered_launch_args, cli_cfg);
-    let forwarded_args = resolve_forwarded_args(cli_name, args);
-
-    let mut cmd = Command::new(&binary);
-    cmd.args(launch_args);
-    cmd.args(&forwarded_args);
-
-    if let Some(config_dir_env) = &cli_cfg.config_dir_env {
-        cmd.env(config_dir_env, &profile_dir);
-    }
-
-    if let Some(agent_folder) = resolve_remote_agent_folder(cli_name, &binary, &profile_dir) {
-        cmd.env("VSCODE_AGENT_FOLDER", agent_folder);
-    }
-
-    for (name, value) in &cli_cfg.extra_env {
-        cmd.env(name, render_template(value, &template_context));
-    }
-
-    for var in &cli_cfg.remove_env_vars {
-        cmd.env_remove(var);
-    }
+    let mut cmd = prepare_exec_command(cli_name, profile, args, config)?;
 
     if should_launch_detached(cli_name) {
         cmd.stdin(Stdio::null());
@@ -81,6 +34,90 @@ pub fn exec_cli(cli_name: &str, profile: &str, args: &[String], config: &Config)
         let status = cmd.status().wrap_err("failed running child process")?;
         std::process::exit(status.code().unwrap_or(1));
     }
+}
+
+pub fn prepare_cli_command(cli_name: &str, profile: &str, config: &Config) -> Result<Command> {
+    let (cmd, _, _, _) = prepare_cli_command_with_context(cli_name, profile, config)?;
+    Ok(cmd)
+}
+
+pub fn prepare_exec_command(
+    cli_name: &str,
+    profile: &str,
+    args: &[String],
+    config: &Config,
+) -> Result<Command> {
+    let (mut cmd, binary, profile_dir, cli_cfg) =
+        prepare_cli_command_with_context(cli_name, profile, config)?;
+    let template_context = TemplateContext {
+        cli_name,
+        profile,
+        profile_dir: &profile_dir,
+    };
+
+    let rendered_launch_args: Vec<String> = cli_cfg
+        .launch_args
+        .iter()
+        .map(|arg| render_template(arg, &template_context))
+        .collect();
+
+    let launch_args = resolve_effective_launch(cli_name, &binary, &rendered_launch_args, &cli_cfg);
+    let forwarded_args = resolve_forwarded_args(cli_name, args);
+    cmd.args(launch_args);
+    cmd.args(&forwarded_args);
+    Ok(cmd)
+}
+
+fn prepare_cli_command_with_context(
+    cli_name: &str,
+    profile: &str,
+    config: &Config,
+) -> Result<(
+    Command,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    crate::config::CliConfig,
+)> {
+    let cli_cfg = config
+        .cli
+        .get(cli_name)
+        .cloned()
+        .ok_or_else(|| eyre!("CLI '{}' not configured in config.toml", cli_name))?;
+
+    let binary = which::which(&cli_cfg.binary).wrap_err_with(|| {
+        format!(
+            "'{}' not found in PATH. Install it or set cli.{}.binary in config.",
+            cli_cfg.binary, cli_name
+        )
+    })?;
+
+    let profile_dir = paths::profile_cli_dir(profile, cli_name)?;
+    ensure_profile_cli_dir(&profile_dir, profile, cli_name)?;
+    let template_context = TemplateContext {
+        cli_name,
+        profile,
+        profile_dir: &profile_dir,
+    };
+
+    let mut cmd = Command::new(&binary);
+
+    if let Some(config_dir_env) = &cli_cfg.config_dir_env {
+        cmd.env(config_dir_env, &profile_dir);
+    }
+
+    if let Some(agent_folder) = resolve_remote_agent_folder(cli_name, &binary, &profile_dir) {
+        cmd.env("VSCODE_AGENT_FOLDER", agent_folder);
+    }
+
+    for (name, value) in &cli_cfg.extra_env {
+        cmd.env(name, render_template(value, &template_context));
+    }
+
+    for var in &cli_cfg.remove_env_vars {
+        cmd.env_remove(var);
+    }
+
+    Ok((cmd, binary, profile_dir, cli_cfg))
 }
 
 fn resolve_effective_launch(
