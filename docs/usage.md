@@ -48,6 +48,36 @@ cloak profile limits work
 cloak doctor
 ```
 
+## Install MCP servers in a profile
+
+Use `cloak mcp install` when you want the MCP configuration to land inside a specific `cloak`
+profile instead of the CLI's global home.
+
+Supported native installers today:
+
+- `codex`: translated to `codex mcp add ...`
+- `claude`: translated to `claude mcp add ...`
+- unsupported CLIs: fail with a clear error
+
+Examples:
+
+```bash
+# Codex stdio MCP in one profile
+cloak mcp install codex filesystem --profile work -- npx @modelcontextprotocol/server-filesystem /tmp
+
+# Codex HTTP MCP with bearer-token env var
+cloak mcp install codex sentry --profile work --transport http --url https://example.com/mcp --bearer-token-env-var SENTRY_TOKEN
+
+# Claude HTTP MCP with headers
+cloak mcp install claude sentry --profile work --transport http --url https://mcp.sentry.dev/mcp -H "Authorization: Bearer token"
+
+# Install the same MCP in every existing profile
+cloak mcp install codex filesystem --all-profiles -- npx @modelcontextprotocol/server-filesystem /tmp
+```
+
+If you omit both `--profile` and `--all-profiles` in an interactive terminal, `cloak` resolves the
+current profile first and then asks whether you want to apply the install to all profiles.
+
 ## Inspect authenticated accounts in a profile
 
 Use this when you want to confirm which identity was captured inside a profile after logging in:
