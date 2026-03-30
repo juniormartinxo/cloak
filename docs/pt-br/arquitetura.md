@@ -9,6 +9,7 @@
 - `src/profile.rs`: resolucao de `.cloak` e escrita do arquivo local.
 - `src/paths.rs`: paths XDG e funcoes de permissao/validacao.
 - `src/exec.rs`: montagem de env + exec do CLI alvo.
+- `src/mcp.rs`: adaptadores de instalacao de MCP por CLI para fluxos nativos suportados.
 - `src/doctor.rs`: checks de saude (binarios, perfis, credenciais).
 
 ## Fluxo do comando exec
@@ -41,6 +42,15 @@ Detectores especificos atuais:
 - `gemini`: `gemini/.gemini/oauth_creds.json`, `gemini/.gemini/.env`,
   `gemini/.gemini/settings.json`
 - outras CLIs: deteccao generica por diretorio nao vazio
+
+## Fluxo do comando `mcp install`
+
+1. Resolve o perfil solicitado, ou o perfil do diretorio atual quando `--profile` nao foi passado.
+2. Em terminal interativo, pergunta se a instalacao deve valer para todos os perfis quando
+   `--all-profiles` nao foi informado.
+3. Valida o formato da requisicao de MCP de acordo com o transporte selecionado.
+4. Traduz a requisicao para a sintaxe nativa de MCP da CLI alvo.
+5. Executa a CLI alvo dentro de cada home de perfil selecionado para que a configuracao do MCP seja gravada por perfil.
 
 ## Seguranca
 
