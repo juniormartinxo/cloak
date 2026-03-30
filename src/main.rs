@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod doctor;
 mod exec;
+mod mcp;
 mod paths;
 mod profile;
 
@@ -28,7 +29,7 @@ use crate::{
         AccountStatus, ClaudeRateLimitSnapshot, ClaudeRateLimitStatus, CodexCreditsSummary,
         CodexRateLimitSnapshot, CodexRateLimitStatus,
     },
-    cli::{Cli, Commands, ProfileCommands},
+    cli::{Cli, Commands, McpCommands, McpTransport, ProfileCommands},
     profile::{ProfileSource, ResolvedProfile},
 };
 
@@ -141,6 +142,36 @@ fn main() -> Result<()> {
             maybe_provision_claude_statusline(&cli, &selected_profile, &loaded.config)?;
             exec::exec_cli(&cli, &selected_profile, &[], &loaded.config)?;
         }
+        Commands::Mcp(sub) => match sub {
+            McpCommands::Install {
+                cli,
+                name,
+                profile,
+                all_profiles,
+                transport,
+                url,
+                env,
+                header,
+                bearer_token_env_var,
+                command,
+            } => {
+                install_mcp(
+                    &loaded.config,
+                    InstallMcpParams {
+                        cli_name: &cli,
+                        server_name: &name,
+                        profile: profile.as_deref(),
+                        all_profiles,
+                        transport,
+                        url: url.as_deref(),
+                        env: &env,
+                        headers: &header,
+                        bearer_token_env_var: bearer_token_env_var.as_deref(),
+                        command: &command,
+                    },
+                )?;
+            }
+        },
         Commands::Doctor => {
             let mut config_for_doctor = loaded.config.clone();
             let missing = config::missing_recommended_cli_names(&config_for_doctor);
@@ -178,6 +209,121 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+struct InstallMcpParams<'a> {
+    cli_name: &'a str,
+    server_name: &'a str,
+    profile: Option<&'a str>,
+    all_profiles: bool,
+    transport: McpTransport,
+    url: Option<&'a str>,
+    env: &'a [String],
+    headers: &'a [String],
+    bearer_token_env_var: Option<&'a str>,
+    command: &'a [String],
+}
+
+fn install_mcp(cfg: &config::Config, params: InstallMcpParams<'_>) -> Result<()> {
+    if params.all_profiles && params.profile.is_some() {
+        return Err(eyre!("use either --profile or --all-profiles, not both"));
+    }
+
+    let selected_profile = match params.profile {
+        Some(name) => {
+            paths::validate_profile_name(name)?;
+            name.to_string()
+        }
+        None => {
+            let cwd = current_dir()?;
+            profile::resolve_profile(&cwd, &cfg.general.default_profile)?.name
+        }
+    };
+
+    let install_all_profiles =
+        params.all_profiles || should_install_for_all_profiles(params.profile, &selected_profile)?;
+
+    let profiles = if install_all_profiles {
+        let profiles = list_profiles()?;
+        if profiles.is_empty() {
+            return Err(eyre!("no profiles found. Run: cloak profile create <name>"));
+        }
+        profiles
+    } else {
+        vec![selected_profile]
+    };
+
+    let request = mcp::McpInstallRequest {
+        cli_name: params.cli_name,
+        server_name: params.server_name,
+        transport: params.transport,
+        url: params.url,
+        env: params.env,
+        headers: params.headers,
+        bearer_token_env_var: params.bearer_token_env_var,
+        command: params.command,
+    };
+    let _ = mcp::build_install_args(&request)?;
+
+    println!("{}", format_main_heading("MCP Install"));
+    print_detail_line("CLI", &format_cli_label(params.cli_name));
+    print_detail_line("Server", params.server_name);
+    print_detail_line(
+        "Target",
+        if install_all_profiles {
+            "all profiles"
+        } else {
+            "selected profile"
+        },
+    );
+    print_detail_line("Count", &profiles.len().to_string());
+
+    let mut failures = Vec::new();
+    for profile_name in &profiles {
+        if params.cli_name == "claude" {
+            maybe_provision_claude_statusline(params.cli_name, profile_name, cfg)?;
+        }
+
+        println!();
+        println!(
+            "{}",
+            format_section_title(&format!("Profile '{}'", profile_name))
+        );
+        print_detail_line("Status", "installing");
+
+        match mcp::install_for_profile(&request, profile_name, cfg) {
+            Ok(()) => print_detail_line("Result", "installed"),
+            Err(err) => {
+                print_detail_line("Result", "failed");
+                print_detail_line("Error", &err.to_string());
+                failures.push(profile_name.clone());
+            }
+        }
+    }
+
+    if failures.is_empty() {
+        return Ok(());
+    }
+
+    Err(eyre!(
+        "MCP install failed for {} profile(s): {}",
+        failures.len(),
+        failures.join(", ")
+    ))
+}
+
+fn should_install_for_all_profiles(
+    explicit_profile: Option<&str>,
+    selected_profile: &str,
+) -> Result<bool> {
+    if explicit_profile.is_some() || !is_interactive_terminal() {
+        return Ok(false);
+    }
+
+    confirm(&format!(
+        "Install this MCP for all profiles instead of only '{}'? ",
+        selected_profile
+    ))
 }
 
 fn show_profile_list(names: &[String], default_profile: &str) {
