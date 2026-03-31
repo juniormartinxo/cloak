@@ -66,7 +66,13 @@ pub enum ProfileCommands {
     Account { name: String },
 
     /// Show usage limits for supported CLIs in a profile
-    Limits { name: String },
+    Limits {
+        name: String,
+
+        /// Display timestamps in a specific UTC offset (e.g. -3 for UTC-3, 5 for UTC+5)
+        #[arg(long, allow_hyphen_values = true)]
+        utc: Option<i32>,
+    },
 
     /// Create profile directory structure
     Create { name: String },
@@ -235,7 +241,36 @@ mod tests {
         let parsed = Cli::parse_from(["cloak", "profile", "limits", "work"]);
 
         match parsed.command {
-            Commands::Profile(ProfileCommands::Limits { name }) => assert_eq!(name, "work"),
+            Commands::Profile(ProfileCommands::Limits { name, utc }) => {
+                assert_eq!(name, "work");
+                assert_eq!(utc, None);
+            }
+            _ => panic!("expected profile limits command"),
+        }
+    }
+
+    #[test]
+    fn test_profile_limits_parses_positive_utc_offset() {
+        let parsed = Cli::parse_from(["cloak", "profile", "limits", "work", "--utc", "5"]);
+
+        match parsed.command {
+            Commands::Profile(ProfileCommands::Limits { name, utc }) => {
+                assert_eq!(name, "work");
+                assert_eq!(utc, Some(5));
+            }
+            _ => panic!("expected profile limits command"),
+        }
+    }
+
+    #[test]
+    fn test_profile_limits_parses_negative_utc_offset() {
+        let parsed = Cli::parse_from(["cloak", "profile", "limits", "work", "--utc", "-3"]);
+
+        match parsed.command {
+            Commands::Profile(ProfileCommands::Limits { name, utc }) => {
+                assert_eq!(name, "work");
+                assert_eq!(utc, Some(-3));
+            }
             _ => panic!("expected profile limits command"),
         }
     }
