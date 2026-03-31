@@ -122,6 +122,17 @@ window was already used, how much remains, and when it resets:
 cloak profile limits work
 ```
 
+By default, reset timestamps are displayed in UTC. Use `--utc` to convert them to a specific UTC
+offset:
+
+```bash
+# Display resets in UTC-3 (e.g. Brasilia)
+cloak profile limits work --utc -3
+
+# Display resets in UTC+5
+cloak profile limits work --utc 5
+```
+
 Typical output:
 
 ```text
