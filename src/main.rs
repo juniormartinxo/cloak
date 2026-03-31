@@ -108,8 +108,8 @@ fn main() -> Result<()> {
             ProfileCommands::Account { name } => {
                 show_profile_accounts(&name, &loaded.config)?;
             }
-            ProfileCommands::Limits { name } => {
-                show_profile_limits(&name, &loaded.config)?;
+            ProfileCommands::Limits { name, utc } => {
+                show_profile_limits(&name, &loaded.config, utc.unwrap_or(0))?;
             }
             ProfileCommands::Create { name } => {
                 create_profile(&name, &loaded.config)?;
@@ -628,11 +628,18 @@ fn show_profile_accounts(profile: &str, cfg: &config::Config) -> Result<()> {
     Ok(())
 }
 
-fn show_profile_limits(profile: &str, cfg: &config::Config) -> Result<()> {
+fn show_profile_limits(profile: &str, cfg: &config::Config, utc_offset: i32) -> Result<()> {
     paths::validate_profile_name(profile)?;
 
     if !profile_exists(profile)? {
         return Err(eyre!("profile '{}' does not exist", profile));
+    }
+
+    if !(-12..=14).contains(&utc_offset) {
+        return Err(eyre!(
+            "invalid UTC offset '{}': must be between -12 and +14",
+            utc_offset
+        ));
     }
 
     println!("{}", format_main_heading(&format!("Profile '{}'", profile)));
@@ -647,7 +654,7 @@ fn show_profile_limits(profile: &str, cfg: &config::Config) -> Result<()> {
         print_limit_section_header("claude", &mut rendered_sections);
         match inspect_profile_claude_limits(profile, cfg)? {
             ClaudeRateLimitStatus::Available(snapshot) => {
-                print_claude_limits_snapshot(&snapshot);
+                print_claude_limits_snapshot(&snapshot, utc_offset);
             }
             ClaudeRateLimitStatus::NoUsageData => {
                 print_detail_line(
@@ -675,7 +682,9 @@ fn show_profile_limits(profile: &str, cfg: &config::Config) -> Result<()> {
     if cfg.cli.contains_key("codex") {
         print_limit_section_header("codex", &mut rendered_sections);
         match inspect_profile_codex_limits(profile, cfg)? {
-            CodexRateLimitStatus::Available(snapshot) => print_codex_limits_snapshot(&snapshot),
+            CodexRateLimitStatus::Available(snapshot) => {
+                print_codex_limits_snapshot(&snapshot, utc_offset);
+            }
             CodexRateLimitStatus::NoUsageData => {
                 print_detail_line(
                     "Status",
@@ -711,7 +720,7 @@ fn maybe_provision_claude_statusline(
     Ok(())
 }
 
-fn print_claude_limits_snapshot(snapshot: &ClaudeRateLimitSnapshot) {
+fn print_claude_limits_snapshot(snapshot: &ClaudeRateLimitSnapshot, utc_offset: i32) {
     let detail = format_limit_subject_detail(
         snapshot.plan_type.as_deref(),
         snapshot.rate_limit_tier.as_deref(),
@@ -729,14 +738,17 @@ fn print_claude_limits_snapshot(snapshot: &ClaudeRateLimitSnapshot) {
     if !snapshot.windows.is_empty() {
         println!(
             "{}",
-            build_usage_windows_table(snapshot.windows.iter().map(|window| {
-                (
-                    window.label,
-                    window.window_minutes,
-                    window.used_percent,
-                    window.resets_at,
-                )
-            }))
+            build_usage_windows_table(
+                snapshot.windows.iter().map(|window| {
+                    (
+                        window.label,
+                        window.window_minutes,
+                        window.used_percent,
+                        window.resets_at,
+                    )
+                }),
+                utc_offset,
+            )
         );
     }
 }
@@ -774,7 +786,7 @@ fn format_limit_subject_detail(
     }
 }
 
-fn print_codex_limits_snapshot(snapshot: &CodexRateLimitSnapshot) {
+fn print_codex_limits_snapshot(snapshot: &CodexRateLimitSnapshot, utc_offset: i32) {
     match snapshot.plan_type.as_deref() {
         Some(plan_type) => {
             print_detail_line("Status", "usage snapshot available");
@@ -794,19 +806,22 @@ fn print_codex_limits_snapshot(snapshot: &CodexRateLimitSnapshot) {
     if !snapshot.windows.is_empty() {
         println!(
             "{}",
-            build_usage_windows_table(snapshot.windows.iter().map(|window| {
-                (
-                    window.label,
-                    window.window_minutes,
-                    window.used_percent,
-                    window.resets_at,
-                )
-            }))
+            build_usage_windows_table(
+                snapshot.windows.iter().map(|window| {
+                    (
+                        window.label,
+                        window.window_minutes,
+                        window.used_percent,
+                        window.resets_at,
+                    )
+                }),
+                utc_offset,
+            )
         );
     }
 
     if let Some(credits) = snapshot.credits.as_ref() {
-        print_detail_line("Credits", &format_codex_credits(credits));
+        print_detail_line("Credits", &format_codex_credits(credits, utc_offset));
     }
 }
 
@@ -853,7 +868,7 @@ fn new_ui_table(header: Vec<&str>) -> Table {
     table
 }
 
-fn build_usage_windows_table<'a, I>(windows: I) -> String
+fn build_usage_windows_table<'a, I>(windows: I, utc_offset: i32) -> String
 where
     I: IntoIterator<Item = (&'a str, u64, f64, i64)>,
 {
@@ -866,14 +881,14 @@ where
             Cell::new(format_window_minutes(window_minutes)),
             Cell::new(format_percent(used_percent)).set_alignment(CellAlignment::Right),
             Cell::new(format_percent(remaining_percent)).set_alignment(CellAlignment::Right),
-            Cell::new(format_unix_timestamp_utc(resets_at)),
+            Cell::new(format_unix_timestamp_utc(resets_at, utc_offset)),
         ]);
     }
 
     table.to_string()
 }
 
-fn format_codex_credits(credits: &CodexCreditsSummary) -> String {
+fn format_codex_credits(credits: &CodexCreditsSummary, utc_offset: i32) -> String {
     let mut parts = Vec::new();
 
     if let Some(value) = credits.used.as_deref() {
@@ -886,7 +901,10 @@ fn format_codex_credits(credits: &CodexCreditsSummary) -> String {
         parts.push(format!("total {value}"));
     }
     if let Some(value) = credits.resets_at {
-        parts.push(format!("resets {}", format_unix_timestamp_utc(value)));
+        parts.push(format!(
+            "resets {}",
+            format_unix_timestamp_utc(value, utc_offset)
+        ));
     }
 
     if parts.is_empty() && credits.opaque {
@@ -920,16 +938,23 @@ fn format_percent(value: f64) -> String {
     format!("{value:.1}%")
 }
 
-fn format_unix_timestamp_utc(timestamp: i64) -> String {
-    let days = timestamp.div_euclid(86_400);
-    let seconds = timestamp.rem_euclid(86_400);
+fn format_unix_timestamp_utc(timestamp: i64, utc_offset: i32) -> String {
+    let adjusted = timestamp + (utc_offset as i64) * 3_600;
+    let days = adjusted.div_euclid(86_400);
+    let seconds = adjusted.rem_euclid(86_400);
 
     let hour = seconds / 3_600;
     let minute = (seconds % 3_600) / 60;
     let second = seconds % 60;
     let (year, month, day) = civil_from_days(days);
 
-    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} UTC")
+    let tz_label = match utc_offset.cmp(&0) {
+        std::cmp::Ordering::Equal => "UTC".to_string(),
+        std::cmp::Ordering::Greater => format!("UTC+{utc_offset}"),
+        std::cmp::Ordering::Less => format!("UTC{utc_offset}"),
+    };
+
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} {tz_label}")
 }
 
 fn civil_from_days(days_since_unix_epoch: i64) -> (i64, i64, i64) {
@@ -1412,14 +1437,39 @@ mod tests {
     #[test]
     fn test_format_unix_timestamp_utc_renders_expected_value() {
         assert_eq!(
-            format_unix_timestamp_utc(1_774_719_759),
+            format_unix_timestamp_utc(1_774_719_759, 0),
             "2026-03-28 17:42:39 UTC"
         );
     }
 
     #[test]
     fn test_format_unix_timestamp_utc_renders_epoch_zero() {
-        assert_eq!(format_unix_timestamp_utc(0), "1970-01-01 00:00:00 UTC");
+        assert_eq!(format_unix_timestamp_utc(0, 0), "1970-01-01 00:00:00 UTC");
+    }
+
+    #[test]
+    fn test_format_unix_timestamp_utc_with_negative_offset() {
+        assert_eq!(
+            format_unix_timestamp_utc(1_774_719_759, -3),
+            "2026-03-28 14:42:39 UTC-3"
+        );
+    }
+
+    #[test]
+    fn test_format_unix_timestamp_utc_with_positive_offset() {
+        assert_eq!(
+            format_unix_timestamp_utc(1_774_719_759, 9),
+            "2026-03-29 02:42:39 UTC+9"
+        );
+    }
+
+    #[test]
+    fn test_format_unix_timestamp_utc_offset_crosses_day_boundary() {
+        // 1970-01-01 23:00:00 UTC → with +2 becomes 1970-01-02 01:00:00 UTC+2
+        assert_eq!(
+            format_unix_timestamp_utc(82_800, 2),
+            "1970-01-02 01:00:00 UTC+2"
+        );
     }
 
     #[test]
@@ -1485,7 +1535,7 @@ mod tests {
             resets_at: Some(1_774_719_759),
             opaque: false,
         };
-        let result = format_codex_credits(&credits);
+        let result = format_codex_credits(&credits, 0);
         assert!(result.contains("used 12.5"));
         assert!(result.contains("remaining 87.5"));
         assert!(result.contains("total 100"));
@@ -1501,7 +1551,7 @@ mod tests {
             resets_at: None,
             opaque: false,
         };
-        assert_eq!(format_codex_credits(&credits), "used 5.0");
+        assert_eq!(format_codex_credits(&credits, 0), "used 5.0");
     }
 
     #[test]
@@ -1514,7 +1564,7 @@ mod tests {
             opaque: true,
         };
         assert_eq!(
-            format_codex_credits(&credits),
+            format_codex_credits(&credits, 0),
             "available (details unavailable)"
         );
     }
