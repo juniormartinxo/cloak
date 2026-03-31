@@ -122,6 +122,17 @@ de cada janela ja foi usado, quanto ainda resta e quando ocorre o reset:
 cloak profile limits work
 ```
 
+Por padrao, os horarios de reset sao exibidos em UTC. Use `--utc` para converter para um offset
+UTC especifico:
+
+```bash
+# Exibir resets em UTC-3 (ex.: Brasilia)
+cloak profile limits work --utc -3
+
+# Exibir resets em UTC+5
+cloak profile limits work --utc 5
+```
+
 Saida tipica:
 
 ```text
