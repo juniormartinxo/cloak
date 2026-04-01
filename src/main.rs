@@ -108,9 +108,6 @@ fn main() -> Result<()> {
             ProfileCommands::Account { name } => {
                 show_profile_accounts(&name, &loaded.config)?;
             }
-            ProfileCommands::Limits { name, utc } => {
-                show_profile_limits(&name, &loaded.config, utc.unwrap_or(0))?;
-            }
             ProfileCommands::Create { name } => {
                 create_profile(&name, &loaded.config)?;
             }
@@ -170,6 +167,24 @@ fn main() -> Result<()> {
                         command: &command,
                     },
                 )?;
+            }
+        },
+        Commands::Limits { profile, utc } => match profile.as_deref() {
+            Some("rank") => show_limits_rank(&loaded.config, utc.unwrap_or(0))?,
+            Some(name) => show_profile_limits(name, &loaded.config, utc.unwrap_or(0))?,
+            None => {
+                let profiles = list_profiles()?;
+                if profiles.is_empty() {
+                    print_detail_line(
+                        "Status",
+                        "No profiles found. Run: cloak profile create <name>",
+                    );
+                } else {
+                    for p in profiles {
+                        show_profile_limits(&p, &loaded.config, utc.unwrap_or(0))?;
+                        println!();
+                    }
+                }
             }
         },
         Commands::Doctor => {
@@ -706,6 +721,163 @@ fn show_profile_limits(profile: &str, cfg: &config::Config, utc_offset: i32) -> 
     Ok(())
 }
 
+fn show_limits_rank(cfg: &config::Config, utc_offset: i32) -> Result<()> {
+    let profiles = list_profiles()?;
+
+    println!("{}", format_main_heading("Weekly Limits Rank"));
+
+    if profiles.is_empty() {
+        print_detail_line(
+            "Status",
+            "No profiles found. Run: cloak profile create <name>",
+        );
+        return Ok(());
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let mut rendered_any = false;
+
+    if cfg.cli.contains_key("claude") {
+        let mut claude_ranks: Vec<(String, Option<String>, f64, u64, i64)> = Vec::new();
+
+        for profile in &profiles {
+            if let Ok(ClaudeRateLimitStatus::Available(snapshot)) =
+                inspect_profile_claude_limits(profile, cfg)
+            {
+                if let Some(window) = snapshot.windows.iter().find(|w| w.window_minutes == 10080) {
+                    let limit_info = format_limit_subject_detail(
+                        snapshot.plan_type.as_deref(),
+                        snapshot.rate_limit_tier.as_deref(),
+                    );
+                    claude_ranks.push((
+                        profile.clone(),
+                        limit_info,
+                        window.used_percent,
+                        window.window_minutes,
+                        window.resets_at,
+                    ));
+                }
+            }
+        }
+
+        if !claude_ranks.is_empty() {
+            println!();
+            println!("{}", format_section_title("Claude"));
+            claude_ranks.sort_by(|a, b| {
+                let avail_a = 100.0 - a.2;
+                let avail_b = 100.0 - b.2;
+                avail_b
+                    .partial_cmp(&avail_a)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            let mut table = new_ui_table(vec![
+                "Profile",
+                "Limit",
+                "Used",
+                "Available",
+                "Pacing",
+                "Resets",
+            ]);
+            for (profile, limit_info, used_percent, window_minutes, resets_at) in claude_ranks {
+                let available = (100.0 - used_percent).clamp(0.0, 100.0);
+                let pacing = format_rank_pacing(available, window_minutes, resets_at, now);
+                table.add_row(vec![
+                    Cell::new(&profile),
+                    Cell::new(limit_info.as_deref().unwrap_or("-")),
+                    Cell::new(format_percent(used_percent)).set_alignment(CellAlignment::Right),
+                    Cell::new(format_percent(available)).set_alignment(CellAlignment::Right),
+                    Cell::new(pacing).set_alignment(CellAlignment::Right),
+                    Cell::new(format_unix_timestamp_utc(resets_at, utc_offset)),
+                ]);
+            }
+            println!("{table}");
+            rendered_any = true;
+        }
+    }
+
+    if cfg.cli.contains_key("codex") {
+        let mut codex_ranks: Vec<(String, Option<String>, f64, u64, i64)> = Vec::new();
+
+        for profile in &profiles {
+            if let Ok(CodexRateLimitStatus::Available(snapshot)) =
+                inspect_profile_codex_limits(profile, cfg)
+            {
+                if let Some(window) = snapshot.windows.iter().find(|w| w.window_minutes == 10080) {
+                    let limit_info = snapshot
+                        .limit_name
+                        .clone()
+                        .or_else(|| snapshot.limit_id.clone())
+                        .or_else(|| snapshot.plan_type.as_ref().map(|p| format!("plan: {p}")));
+                    codex_ranks.push((
+                        profile.clone(),
+                        limit_info,
+                        window.used_percent,
+                        window.window_minutes,
+                        window.resets_at,
+                    ));
+                }
+            }
+        }
+
+        if !codex_ranks.is_empty() {
+            println!();
+            println!("{}", format_section_title("Codex"));
+            codex_ranks.sort_by(|a, b| {
+                let avail_a = 100.0 - a.2;
+                let avail_b = 100.0 - b.2;
+                avail_b
+                    .partial_cmp(&avail_a)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            let mut table = new_ui_table(vec![
+                "Profile",
+                "Limit",
+                "Used",
+                "Available",
+                "Pacing",
+                "Resets",
+            ]);
+            for (profile, limit_info, used_percent, window_minutes, resets_at) in codex_ranks {
+                let available = (100.0 - used_percent).clamp(0.0, 100.0);
+                let pacing = format_rank_pacing(available, window_minutes, resets_at, now);
+                table.add_row(vec![
+                    Cell::new(&profile),
+                    Cell::new(limit_info.as_deref().unwrap_or("-")),
+                    Cell::new(format_percent(used_percent)).set_alignment(CellAlignment::Right),
+                    Cell::new(format_percent(available)).set_alignment(CellAlignment::Right),
+                    Cell::new(pacing).set_alignment(CellAlignment::Right),
+                    Cell::new(format_unix_timestamp_utc(resets_at, utc_offset)),
+                ]);
+            }
+            println!("{table}");
+            rendered_any = true;
+        }
+    }
+
+    if !rendered_any {
+        println!();
+        println!("No weekly usage data was found for any supported CLI across profiles.");
+    }
+
+    Ok(())
+}
+
+fn format_rank_pacing(available: f64, window_minutes: u64, resets_at: i64, now: i64) -> String {
+    let (actual_remaining, actual_seconds) = if resets_at > now {
+        (available, (resets_at - now) as f64)
+    } else {
+        (100.0, (window_minutes * 60) as f64)
+    };
+    let days = (actual_seconds / 86400.0).max(0.01);
+    format!("{:.1}%/d", actual_remaining / days)
+}
+
 fn maybe_provision_claude_statusline(
     cli_name: &str,
     profile: &str,
@@ -872,15 +1044,46 @@ fn build_usage_windows_table<'a, I>(windows: I, utc_offset: i32) -> String
 where
     I: IntoIterator<Item = (&'a str, u64, f64, i64)>,
 {
-    let mut table = new_ui_table(vec!["Limit", "Window", "Used", "Remaining", "Resets"]);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let mut table = new_ui_table(vec![
+        "Limit",
+        "Window",
+        "Used",
+        "Remaining",
+        "Pacing",
+        "Resets",
+    ]);
 
     for (label, window_minutes, used_percent, resets_at) in windows {
-        let remaining_percent = (100.0 - used_percent).clamp(0.0, 100.0);
+        let (actual_remaining, actual_seconds) = if resets_at > now {
+            (
+                (100.0 - used_percent).clamp(0.0, 100.0),
+                (resets_at - now) as f64,
+            )
+        } else {
+            (100.0, (window_minutes * 60) as f64)
+        };
+
+        let pacing_str = if window_minutes >= 60 * 24 {
+            let days = (actual_seconds / 86400.0).max(0.01);
+            format!("{:.1}%/d", actual_remaining / days)
+        } else {
+            let hours = (actual_seconds / 3600.0).max(0.01);
+            format!("{:.1}%/h", actual_remaining / hours)
+        };
+
+        let display_remaining = (100.0 - used_percent).clamp(0.0, 100.0);
+
         table.add_row(vec![
             Cell::new(label),
             Cell::new(format_window_minutes(window_minutes)),
             Cell::new(format_percent(used_percent)).set_alignment(CellAlignment::Right),
-            Cell::new(format_percent(remaining_percent)).set_alignment(CellAlignment::Right),
+            Cell::new(format_percent(display_remaining)).set_alignment(CellAlignment::Right),
+            Cell::new(pacing_str).set_alignment(CellAlignment::Right),
             Cell::new(format_unix_timestamp_utc(resets_at, utc_offset)),
         ]);
     }
