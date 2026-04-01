@@ -619,12 +619,12 @@ mod unix_exec_tests {
                     "primary": {
                         "used_percent": 1.0,
                         "window_minutes": 300,
-                        "resets_at": 1774719759i64
+                        "resets_at": 1811808000i64
                     },
                     "secondary": {
                         "used_percent": 30.0,
                         "window_minutes": 10080,
-                        "resets_at": 1775223377i64
+                        "resets_at": 1812412800i64
                     }
                 }
             }
@@ -686,12 +686,83 @@ mod unix_exec_tests {
             "missing remaining percentage:\n{stdout}"
         );
         assert!(
-            stdout.contains("2026-03-28 17:42:39 UTC"),
+            stdout.contains("2027-06-01 00:00:00 UTC"),
             "missing primary reset timestamp:\n{stdout}"
         );
         assert!(
             stdout.contains("secondary"),
             "missing secondary limit window:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn profile_limits_guides_codex_refresh_when_snapshot_is_expired() {
+        let tmp = tempdir().expect("tempdir");
+        let xdg_config_home = tmp.path().join("xdg");
+        let profiles_root = xdg_config_home.join("cloak").join("profiles");
+        let work_dir = profiles_root.join("work");
+
+        write_standard_config(&xdg_config_home);
+
+        fs::create_dir_all(work_dir.join("codex/sessions/2026/03/28")).expect("create codex dir");
+        fs::write(
+            work_dir.join("codex/auth.json"),
+            json!({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "account_id": "acct_123"
+                }
+            })
+            .to_string(),
+        )
+        .expect("write codex auth");
+
+        let session = json!({
+            "timestamp": "2026-03-28T15:23:12.299Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "rate_limits": {
+                    "limit_id": "codex",
+                    "limit_name": "Codex Team",
+                    "plan_type": "team",
+                    "primary": {
+                        "used_percent": 80.0,
+                        "window_minutes": 300,
+                        "resets_at": 0i64
+                    }
+                }
+            }
+        });
+
+        fs::write(
+            work_dir.join("codex/sessions/2026/03/28/rollout-expired.jsonl"),
+            format!("{session}\n"),
+        )
+        .expect("write expired codex session");
+
+        let output = Command::new(cloak_bin())
+            .arg("limits")
+            .arg("work")
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak limits");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("expired *"),
+            "missing expired marker:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("record a fresh token_count snapshot"),
+            "missing codex refresh guidance:\n{stdout}"
         );
     }
 
@@ -723,11 +794,11 @@ mod unix_exec_tests {
                 "rate_limits": {
                     "five_hour": {
                         "used_percentage": 12.5,
-                        "resets_at": 1774719759i64
+                        "resets_at": 1811808000i64
                     },
                     "seven_day": {
                         "used_percentage": 37.0,
-                        "resets_at": 1775223377i64
+                        "resets_at": 1812412800i64
                     }
                 }
             })
@@ -776,12 +847,59 @@ mod unix_exec_tests {
             "missing claude used percentage:\n{stdout}"
         );
         assert!(
-            stdout.contains("2026-03-28 17:42:39 UTC"),
+            stdout.contains("2027-06-01 00:00:00 UTC"),
             "missing claude reset timestamp:\n{stdout}"
         );
         assert!(
             stdout.contains("seven_day"),
             "missing claude seven-day window:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn profile_limits_guides_claude_refresh_when_snapshot_is_missing() {
+        let tmp = tempdir().expect("tempdir");
+        let xdg_config_home = tmp.path().join("xdg");
+        let profiles_root = xdg_config_home.join("cloak").join("profiles");
+        let work_dir = profiles_root.join("work");
+
+        write_standard_config(&xdg_config_home);
+
+        fs::create_dir_all(work_dir.join("claude")).expect("create claude dir");
+        fs::write(
+            work_dir.join("claude/.credentials.json"),
+            json!({
+                "claudeAiOauth": {
+                    "subscriptionType": "team",
+                    "rateLimitTier": "default_raven"
+                }
+            })
+            .to_string(),
+        )
+        .expect("write claude credentials");
+
+        let output = Command::new(cloak_bin())
+            .arg("limits")
+            .arg("work")
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak limits");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("authenticated, but no local usage snapshot was found yet"),
+            "missing missing-snapshot status:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("statusline writes usage-limits.json after Claude receives a response"),
+            "missing Claude refresh guidance:\n{stdout}"
         );
     }
 
