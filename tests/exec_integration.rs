@@ -637,12 +637,11 @@ mod unix_exec_tests {
         .expect("write codex session");
 
         let output = Command::new(cloak_bin())
-            .arg("profile")
             .arg("limits")
             .arg("work")
             .env("XDG_CONFIG_HOME", &xdg_config_home)
             .output()
-            .expect("run cloak profile limits");
+            .expect("run cloak limits");
 
         assert!(
             output.status.success(),
@@ -737,12 +736,11 @@ mod unix_exec_tests {
         .expect("write claude usage snapshot");
 
         let output = Command::new(cloak_bin())
-            .arg("profile")
             .arg("limits")
             .arg("work")
             .env("XDG_CONFIG_HOME", &xdg_config_home)
             .output()
-            .expect("run cloak profile limits");
+            .expect("run cloak limits");
 
         assert!(
             output.status.success(),
