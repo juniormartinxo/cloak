@@ -130,9 +130,12 @@ gemini -> Gem User <gem@example.com>
 - `claude`: le `claude/usage-limits.json`, preenchido pelo statusline padrao do Claude depois que o
   Claude recebe pelo menos uma resposta naquele perfil. Mostra os percentuais mais recentes das
   janelas de 5 horas e 7 dias, logica adaptativa de pacing (%/h ou %/d) baseada no tempo restante,
-  alem dos timestamps de reset.
+  alem dos timestamps de reset. Para atualizar dados ausentes ou expirados, abra ou continue o
+  Claude naquele perfil e aguarde uma resposta; nao e preciso rodar `/usage`.
 - `codex`: le o evento `token_count` mais recente em `codex/sessions` e mostra as janelas
-  registradas, o percentual restante, a taxa de pacing e os timestamps de reset.
+  registradas, o percentual restante, a taxa de pacing e os timestamps de reset. Para atualizar
+  dados ausentes ou expirados, abra ou continue o Codex naquele perfil; nao e preciso rodar
+  `/status`.
 
 `cloak mcp install` instala servidores MCP dentro do perfil selecionado no `cloak`, traduzindo a
 configuracao para a sintaxe nativa de cada CLI suportada:
