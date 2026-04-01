@@ -44,7 +44,8 @@ cloak login gemini work
 # 4) Inspect current context
 cloak profile show
 cloak profile account work
-cloak profile limits work
+cloak limits work
+cloak limits rank
 cloak doctor
 ```
 
@@ -113,13 +114,16 @@ How `cloak` detects this:
 This command only inspects local files inside `profiles/<name>/<cli>`; it does not contact any
 remote API.
 
-## Inspect usage limits in a profile
+## Inspect usage limits
 
-Use this when you want the latest local limit snapshots for a profile, including how much of each
-window was already used, how much remains, and when it resets:
+Use this when you want the latest local limit snapshots. If you omit the profile name, it will display the limits for **all** registered profiles:
 
 ```bash
-cloak profile limits work
+# Inspect limits of all profiles
+cloak limits
+
+# Inspect limits of a specific profile
+cloak limits work
 ```
 
 By default, reset timestamps are displayed in UTC. Use `--utc` to convert them to a specific UTC
@@ -127,10 +131,10 @@ offset:
 
 ```bash
 # Display resets in UTC-3 (e.g. Brasilia)
-cloak profile limits work --utc -3
+cloak limits work --utc -3
 
 # Display resets in UTC+5
-cloak profile limits work --utc 5
+cloak limits work --utc 5
 ```
 
 Typical output:
@@ -142,24 +146,24 @@ Claude
   Status: usage snapshot available
   Details: plan: team, tier: default_raven
   Observed: 2026-03-28T18:12:44Z
-  ╭───────────┬────────┬───────┬───────────┬─────────────────────────╮
-  │ Limit     ┆ Window ┆  Used ┆ Remaining ┆ Resets                  │
-  ╞═══════════╪════════╪═══════╪═══════════╪═════════════════════════╡
-  │ five_hour ┆ 5h     ┆ 12.5% ┆     87.5% ┆ 2026-03-28 17:42:39 UTC │
-  │ seven_day ┆ 1w     ┆   37% ┆       63% ┆ 2026-04-03 13:36:17 UTC │
-  ╰───────────┴────────┴───────┴───────────┴─────────────────────────╯
+  ╭───────────┬────────┬───────┬───────────┬─────────┬─────────────────────────╮
+  │ Limit     ┆ Window ┆  Used ┆ Remaining ┆  Pacing ┆ Resets                  │
+  ╞═══════════╪════════╪═══════╪═══════════╪═════════╪═════════════════════════╡
+  │ five_hour ┆ 5h     ┆ 12.5% ┆     87.5% ┆ 18.2%/h ┆ 2026-03-28 17:42:39 UTC │
+  │ seven_day ┆ 1w     ┆   37% ┆       63% ┆ 12.4%/d ┆ 2026-04-03 13:36:17 UTC │
+  ╰───────────┴────────┴───────┴───────────┴─────────┴─────────────────────────╯
 
 Codex
   Status: usage snapshot available
   Details: plan: team
   Observed: 2026-03-28T15:23:12.299Z
   Limit: Codex Team
-  ╭───────────┬────────┬──────┬───────────┬─────────────────────────╮
-  │ Limit     ┆ Window ┆ Used ┆ Remaining ┆ Resets                  │
-  ╞═══════════╪════════╪══════╪═══════════╪═════════════════════════╡
-  │ primary   ┆ 5h     ┆   1% ┆       99% ┆ 2026-03-28 17:42:39 UTC │
-  │ secondary ┆ 1w     ┆  30% ┆       70% ┆ 2026-04-03 13:36:17 UTC │
-  ╰───────────┴────────┴──────┴───────────┴─────────────────────────╯
+  ╭───────────┬────────┬──────┬───────────┬─────────┬─────────────────────────╮
+  │ Limit     ┆ Window ┆ Used ┆ Remaining ┆  Pacing ┆ Resets                  │
+  ╞═══════════╪════════╪══════╪═══════════╪═════════╪═════════════════════════╡
+  │ primary   ┆ 5h     ┆   1% ┆       99% ┆ 20.6%/h ┆ 2026-03-28 17:42:39 UTC │
+  │ secondary ┆ 1w     ┆  30% ┆       70% ┆ 13.8%/d ┆ 2026-04-03 13:36:17 UTC │
+  ╰───────────┴────────┴──────┴───────────┴─────────┴─────────────────────────╯
 ```
 
 How the snapshots are sourced:
@@ -168,6 +172,16 @@ How the snapshots are sourced:
   Claude statusline script after Claude receives at least one response in that profile.
 - `codex`: reads the newest `token_count` event under `profiles/<name>/codex/sessions` and uses
   the `rate_limits` payload persisted by the Codex CLI.
+
+## Rank usage limits across profiles
+
+To see which profile has the highest percentage of weekly limit left for a given AI, use:
+
+```bash
+cloak limits rank
+```
+
+This command queries all your local snapshots and presents a descending list of available weekly limits (the 7-day window) grouped by AI, helping you decide which profile to balance usage towards.
 
 ## Change profile for a repository
 
