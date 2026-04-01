@@ -141,6 +141,10 @@ gemini -> Gem User <gem@example.com>
   usage windows, remaining percentages, pacing rate, and reset timestamps. To refresh missing or
   expired data, open or continue Codex in that profile; no separate `/status` step is required.
 
+`cloak limits rank` uses the weekly snapshot for each profile and now shows a `Snapshot` column.
+Fresh snapshots are ranked first; expired snapshots remain visible for reference, but are sorted
+after fresh rows and marked with `expired *` in `Resets`.
+
 `cloak mcp install` installs MCP servers inside the selected `cloak` profile, using the native
 syntax of each supported CLI instead of a one-size-fits-all wrapper:
 
