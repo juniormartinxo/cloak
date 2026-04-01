@@ -135,9 +135,11 @@ gemini -> Gem User <gem@example.com>
 - `claude`: reads `claude/usage-limits.json`, which is populated by the default Claude statusline
   script after Claude receives at least one response in that profile. It shows the latest 5-hour
   and 7-day subscription usage percentages, dynamic pacing (%/h or %/d) based on remaining time,
-  plus reset timestamps.
+  plus reset timestamps. To refresh missing or expired data, open or continue Claude in that
+  profile and wait for a response; no separate `/usage` step is required.
 - `codex`: reads the newest `token_count` event under `codex/sessions` and shows the recorded
-  usage windows, remaining percentages, pacing rate, and reset timestamps.
+  usage windows, remaining percentages, pacing rate, and reset timestamps. To refresh missing or
+  expired data, open or continue Codex in that profile; no separate `/status` step is required.
 
 `cloak mcp install` installs MCP servers inside the selected `cloak` profile, using the native
 syntax of each supported CLI instead of a one-size-fits-all wrapper:
