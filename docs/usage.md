@@ -192,6 +192,15 @@ cloak limits rank
 
 This command queries all your local snapshots and presents a descending list of available weekly limits (the 7-day window) grouped by AI, helping you decide which profile to balance usage towards.
 
+Ranking behavior:
+
+- rows now include a `Snapshot` column
+- `fresh` means the weekly snapshot is still valid
+- `expired` means the weekly snapshot has already rolled over; the row is kept for visibility, but
+  it is sorted after fresh snapshots
+- expired rows still show `expired *` in the `Resets` column, plus a CLI-specific hint below the
+  table explaining how to capture a fresh snapshot
+
 ## Change profile for a repository
 
 Inside the repository:
