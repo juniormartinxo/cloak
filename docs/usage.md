@@ -173,6 +173,15 @@ How the snapshots are sourced:
 - `codex`: reads the newest `token_count` event under `profiles/<name>/codex/sessions` and uses
   the `rate_limits` payload persisted by the Codex CLI.
 
+Refresh guidance:
+
+- `claude`: if no snapshot exists yet, or a window shows `expired *`, open or continue Claude in
+  that profile and wait for a response. The statusline writes the next `usage-limits.json`
+  snapshot automatically; no separate `/usage` step is required.
+- `codex`: if no snapshot exists yet, or a window shows `expired *`, open or continue Codex in
+  that profile. `cloak limits` will pick up the next `token_count` snapshot written under
+  `codex/sessions`; no separate `/status` step is required.
+
 ## Rank usage limits across profiles
 
 To see which profile has the highest percentage of weekly limit left for a given AI, use:
