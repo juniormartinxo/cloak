@@ -44,7 +44,8 @@ cloak login gemini work
 # 4) Inspecionar contexto atual
 cloak profile show
 cloak profile account work
-cloak profile limits work
+cloak limits work
+cloak limits rank
 cloak doctor
 ```
 
@@ -113,13 +114,16 @@ Como o `cloak` detecta isso:
 Esse comando apenas inspeciona arquivos locais dentro de `profiles/<nome>/<cli>`; ele nao consulta
 nenhuma API remota.
 
-## Inspecionar limites de uso em um perfil
+## Inspecionar limites de uso
 
-Use isso quando quiser os snapshots locais de limites mais recentes de um perfil, incluindo quanto
-de cada janela ja foi usado, quanto ainda resta e quando ocorre o reset:
+Use isso quando quiser os snapshots locais de limites mais recentes. Se voce omitir o nome do perfil, o comando exibe os limites de **todos** os perfis registrados:
 
 ```bash
-cloak profile limits work
+# Inspecionar limites de todos os perfis
+cloak limits
+
+# Inspecionar limites de um perfil especifico
+cloak limits work
 ```
 
 Por padrao, os horarios de reset sao exibidos em UTC. Use `--utc` para converter para um offset
@@ -127,10 +131,10 @@ UTC especifico:
 
 ```bash
 # Exibir resets em UTC-3 (ex.: Brasilia)
-cloak profile limits work --utc -3
+cloak limits work --utc -3
 
 # Exibir resets em UTC+5
-cloak profile limits work --utc 5
+cloak limits work --utc 5
 ```
 
 Saida tipica:
@@ -142,24 +146,24 @@ Claude
   Status: usage snapshot available
   Details: plan: team, tier: default_raven
   Observed: 2026-03-28T18:12:44Z
-  ╭───────────┬────────┬───────┬───────────┬─────────────────────────╮
-  │ Limit     ┆ Window ┆  Used ┆ Remaining ┆ Resets                  │
-  ╞═══════════╪════════╪═══════╪═══════════╪═════════════════════════╡
-  │ five_hour ┆ 5h     ┆ 12.5% ┆     87.5% ┆ 2026-03-28 17:42:39 UTC │
-  │ seven_day ┆ 1w     ┆   37% ┆       63% ┆ 2026-04-03 13:36:17 UTC │
-  ╰───────────┴────────┴───────┴───────────┴─────────────────────────╯
+  ╭───────────┬────────┬───────┬───────────┬─────────┬─────────────────────────╮
+  │ Limit     ┆ Window ┆  Used ┆ Remaining ┆  Pacing ┆ Resets                  │
+  ╞═══════════╪════════╪═══════╪═══════════╪═════════╪═════════════════════════╡
+  │ five_hour ┆ 5h     ┆ 12.5% ┆     87.5% ┆ 18.2%/h ┆ 2026-03-28 17:42:39 UTC │
+  │ seven_day ┆ 1w     ┆   37% ┆       63% ┆ 12.4%/d ┆ 2026-04-03 13:36:17 UTC │
+  ╰───────────┴────────┴───────┴───────────┴─────────┴─────────────────────────╯
 
 Codex
   Status: usage snapshot available
   Details: plan: team
   Observed: 2026-03-28T15:23:12.299Z
   Limit: Codex Team
-  ╭───────────┬────────┬──────┬───────────┬─────────────────────────╮
-  │ Limit     ┆ Window ┆ Used ┆ Remaining ┆ Resets                  │
-  ╞═══════════╪════════╪══════╪═══════════╪═════════════════════════╡
-  │ primary   ┆ 5h     ┆   1% ┆       99% ┆ 2026-03-28 17:42:39 UTC │
-  │ secondary ┆ 1w     ┆  30% ┆       70% ┆ 2026-04-03 13:36:17 UTC │
-  ╰───────────┴────────┴──────┴───────────┴─────────────────────────╯
+  ╭───────────┬────────┬──────┬───────────┬─────────┬─────────────────────────╮
+  │ Limit     ┆ Window ┆ Used ┆ Remaining ┆  Pacing ┆ Resets                  │
+  ╞═══════════╪════════╪══════╪═══════════╪═════════╪═════════════════════════╡
+  │ primary   ┆ 5h     ┆   1% ┆       99% ┆ 20.6%/h ┆ 2026-03-28 17:42:39 UTC │
+  │ secondary ┆ 1w     ┆  30% ┆       70% ┆ 13.8%/d ┆ 2026-04-03 13:36:17 UTC │
+  ╰───────────┴────────┴──────┴───────────┴─────────┴─────────────────────────╯
 ```
 
 Origem dos snapshots:
@@ -168,6 +172,16 @@ Origem dos snapshots:
   Claude depois que o Claude recebe pelo menos uma resposta naquele perfil.
 - `codex`: le o evento `token_count` mais recente em `profiles/<nome>/codex/sessions` e usa o
   payload `rate_limits` persistido pela CLI do Codex.
+
+## Rankear limites de uso entre perfis
+
+Para ver qual perfil tem a maior porcentagem de limite semanal disponivel para uma dada IA, use:
+
+```bash
+cloak limits rank
+```
+
+Esse comando consulta todos os snapshots locais e exibe um rank descendente dos limites semanais (a janela de 7 dias) agrupado por IA, ajudando na escolha do perfil com maior disponibilidade para balanceamento de uso.
 
 ## Trocar perfil de um repo
 
