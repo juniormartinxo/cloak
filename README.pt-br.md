@@ -137,6 +137,10 @@ gemini -> Gem User <gem@example.com>
   dados ausentes ou expirados, abra ou continue o Codex naquele perfil; nao e preciso rodar
   `/status`.
 
+`cloak limits rank` usa o snapshot semanal de cada perfil e agora mostra a coluna `Snapshot`.
+Snapshots frescos aparecem primeiro; snapshots expirados continuam visiveis para referencia, mas
+ficam ordenados depois das linhas frescas e marcados com `expired *` em `Resets`.
+
 `cloak mcp install` instala servidores MCP dentro do perfil selecionado no `cloak`, traduzindo a
 configuracao para a sintaxe nativa de cada CLI suportada:
 
