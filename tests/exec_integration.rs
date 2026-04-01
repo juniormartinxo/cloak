@@ -904,6 +904,106 @@ mod unix_exec_tests {
     }
 
     #[test]
+    fn limits_rank_marks_expired_profiles_and_sorts_them_last() {
+        let tmp = tempdir().expect("tempdir");
+        let xdg_config_home = tmp.path().join("xdg");
+        let profiles_root = xdg_config_home.join("cloak").join("profiles");
+        let fresh_dir = profiles_root.join("fresh");
+        let stale_dir = profiles_root.join("stale");
+
+        write_standard_config(&xdg_config_home);
+
+        fs::create_dir_all(fresh_dir.join("codex/sessions/2026/03/28")).expect("create fresh dir");
+        fs::create_dir_all(stale_dir.join("codex/sessions/2026/03/28")).expect("create stale dir");
+        fs::write(
+            fresh_dir.join("codex/auth.json"),
+            json!({"auth_mode": "chatgpt"}).to_string(),
+        )
+        .expect("write fresh auth");
+        fs::write(
+            stale_dir.join("codex/auth.json"),
+            json!({"auth_mode": "chatgpt"}).to_string(),
+        )
+        .expect("write stale auth");
+
+        let fresh_session = json!({
+            "timestamp": "2026-03-28T15:23:12.299Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "rate_limits": {
+                    "limit_name": "Codex Team",
+                    "plan_type": "team",
+                    "secondary": {
+                        "used_percent": 40.0,
+                        "window_minutes": 10080,
+                        "resets_at": 1812412800i64
+                    }
+                }
+            }
+        });
+        let stale_session = json!({
+            "timestamp": "2026-03-28T15:23:12.299Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "rate_limits": {
+                    "limit_name": "Codex Team",
+                    "plan_type": "team",
+                    "secondary": {
+                        "used_percent": 5.0,
+                        "window_minutes": 10080,
+                        "resets_at": 0i64
+                    }
+                }
+            }
+        });
+
+        fs::write(
+            fresh_dir.join("codex/sessions/2026/03/28/fresh.jsonl"),
+            format!("{fresh_session}\n"),
+        )
+        .expect("write fresh session");
+        fs::write(
+            stale_dir.join("codex/sessions/2026/03/28/stale.jsonl"),
+            format!("{stale_session}\n"),
+        )
+        .expect("write stale session");
+
+        let output = Command::new(cloak_bin())
+            .arg("limits")
+            .arg("rank")
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak limits rank");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("Snapshot"),
+            "missing snapshot column:\n{stdout}"
+        );
+        assert!(stdout.contains("fresh"), "missing fresh marker:\n{stdout}");
+        assert!(
+            stdout.contains("expired"),
+            "missing expired marker:\n{stdout}"
+        );
+
+        let fresh_idx = stdout.find("fresh").expect("fresh profile rendered");
+        let stale_idx = stdout.find("stale").expect("stale profile rendered");
+        assert!(
+            fresh_idx < stale_idx,
+            "fresh profile should be ranked before stale profile:\n{stdout}"
+        );
+    }
+
+    #[test]
     fn doctor_renders_tables_for_binaries_and_profiles() {
         let tmp = tempdir().expect("tempdir");
         let bin_dir = tmp.path().join("bin");
