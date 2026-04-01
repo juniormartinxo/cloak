@@ -192,6 +192,15 @@ cloak limits rank
 
 Esse comando consulta todos os snapshots locais e exibe um rank descendente dos limites semanais (a janela de 7 dias) agrupado por IA, ajudando na escolha do perfil com maior disponibilidade para balanceamento de uso.
 
+Comportamento do ranking:
+
+- as linhas agora incluem a coluna `Snapshot`
+- `fresh` significa que o snapshot semanal ainda esta valido
+- `expired` significa que o snapshot semanal ja virou; a linha continua visivel para referencia, mas
+  passa a ser ordenada depois dos snapshots frescos
+- linhas expiradas continuam mostrando `expired *` na coluna `Resets`, alem de uma dica abaixo da
+  tabela explicando como capturar um snapshot novo
+
 ## Trocar perfil de um repo
 
 No diretorio do repo:
