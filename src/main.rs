@@ -676,14 +676,12 @@ fn show_profile_limits(profile: &str, cfg: &config::Config, utc_offset: i32) -> 
                     "Status",
                     "authenticated, but no local usage snapshot was found yet",
                 );
+                print_detail_line("Next", &missing_usage_snapshot_hint("claude"));
                 if provision_result.script_created
                     || provision_result.script_updated
                     || provision_result.settings_updated
                 {
-                    print_detail_line(
-                        "Note",
-                        "snapshot support was refreshed; open or continue a Claude session to populate usage data",
-                    );
+                    print_detail_line("Note", "snapshot support was refreshed for this profile");
                 }
             }
             ClaudeRateLimitStatus::NotAuthenticated => {
@@ -705,6 +703,7 @@ fn show_profile_limits(profile: &str, cfg: &config::Config, utc_offset: i32) -> 
                     "Status",
                     "authenticated, but no local usage snapshot was found yet",
                 );
+                print_detail_line("Next", &missing_usage_snapshot_hint("codex"));
             }
             CodexRateLimitStatus::NotAuthenticated => {
                 print_detail_line("Status", "not authenticated");
@@ -734,10 +733,7 @@ fn show_limits_rank(cfg: &config::Config, utc_offset: i32) -> Result<()> {
         return Ok(());
     }
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let now = unix_now();
 
     let mut rendered_any = false;
 
@@ -753,10 +749,12 @@ fn show_limits_rank(cfg: &config::Config, utc_offset: i32) -> Result<()> {
                         snapshot.plan_type.as_deref(),
                         snapshot.rate_limit_tier.as_deref(),
                     );
+                    let effective_used =
+                        effective_used_percent(window.used_percent, window.resets_at, now);
                     claude_ranks.push((
                         profile.clone(),
                         limit_info,
-                        window.used_percent,
+                        effective_used,
                         window.window_minutes,
                         window.resets_at,
                     ));
@@ -783,19 +781,32 @@ fn show_limits_rank(cfg: &config::Config, utc_offset: i32) -> Result<()> {
                 "Pacing",
                 "Resets",
             ]);
+            let mut any_expired = false;
             for (profile, limit_info, used_percent, window_minutes, resets_at) in claude_ranks {
+                let expired = resets_at <= now;
+                if expired {
+                    any_expired = true;
+                }
                 let available = (100.0 - used_percent).clamp(0.0, 100.0);
                 let pacing = format_rank_pacing(available, window_minutes, resets_at, now);
+                let resets_display = if expired {
+                    "expired *".to_string()
+                } else {
+                    format_unix_timestamp_utc(resets_at, utc_offset)
+                };
                 table.add_row(vec![
                     Cell::new(&profile),
                     Cell::new(limit_info.as_deref().unwrap_or("-")),
                     Cell::new(format_percent(used_percent)).set_alignment(CellAlignment::Right),
                     Cell::new(format_percent(available)).set_alignment(CellAlignment::Right),
                     Cell::new(pacing).set_alignment(CellAlignment::Right),
-                    Cell::new(format_unix_timestamp_utc(resets_at, utc_offset)),
+                    Cell::new(resets_display),
                 ]);
             }
             println!("{table}");
+            if any_expired {
+                println!("  * {}", expired_usage_rank_hint("claude"));
+            }
             rendered_any = true;
         }
     }
@@ -813,10 +824,12 @@ fn show_limits_rank(cfg: &config::Config, utc_offset: i32) -> Result<()> {
                         .clone()
                         .or_else(|| snapshot.limit_id.clone())
                         .or_else(|| snapshot.plan_type.as_ref().map(|p| format!("plan: {p}")));
+                    let effective_used =
+                        effective_used_percent(window.used_percent, window.resets_at, now);
                     codex_ranks.push((
                         profile.clone(),
                         limit_info,
-                        window.used_percent,
+                        effective_used,
                         window.window_minutes,
                         window.resets_at,
                     ));
@@ -843,19 +856,32 @@ fn show_limits_rank(cfg: &config::Config, utc_offset: i32) -> Result<()> {
                 "Pacing",
                 "Resets",
             ]);
+            let mut any_expired = false;
             for (profile, limit_info, used_percent, window_minutes, resets_at) in codex_ranks {
+                let expired = resets_at <= now;
+                if expired {
+                    any_expired = true;
+                }
                 let available = (100.0 - used_percent).clamp(0.0, 100.0);
                 let pacing = format_rank_pacing(available, window_minutes, resets_at, now);
+                let resets_display = if expired {
+                    "expired *".to_string()
+                } else {
+                    format_unix_timestamp_utc(resets_at, utc_offset)
+                };
                 table.add_row(vec![
                     Cell::new(&profile),
                     Cell::new(limit_info.as_deref().unwrap_or("-")),
                     Cell::new(format_percent(used_percent)).set_alignment(CellAlignment::Right),
                     Cell::new(format_percent(available)).set_alignment(CellAlignment::Right),
                     Cell::new(pacing).set_alignment(CellAlignment::Right),
-                    Cell::new(format_unix_timestamp_utc(resets_at, utc_offset)),
+                    Cell::new(resets_display),
                 ]);
             }
             println!("{table}");
+            if any_expired {
+                println!("  * {}", expired_usage_rank_hint("codex"));
+            }
             rendered_any = true;
         }
     }
@@ -866,6 +892,14 @@ fn show_limits_rank(cfg: &config::Config, utc_offset: i32) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn effective_used_percent(used_percent: f64, resets_at: i64, now: i64) -> f64 {
+    if resets_at > now {
+        used_percent
+    } else {
+        0.0
+    }
 }
 
 fn format_rank_pacing(available: f64, window_minutes: u64, resets_at: i64, now: i64) -> String {
@@ -922,6 +956,14 @@ fn print_claude_limits_snapshot(snapshot: &ClaudeRateLimitSnapshot, utc_offset: 
                 utc_offset,
             )
         );
+    }
+
+    if snapshot
+        .windows
+        .iter()
+        .any(|window| usage_window_expired(window.resets_at, unix_now()))
+    {
+        print_detail_line("Next", &expired_usage_snapshot_hint("claude"));
     }
 }
 
@@ -992,6 +1034,14 @@ fn print_codex_limits_snapshot(snapshot: &CodexRateLimitSnapshot, utc_offset: i3
         );
     }
 
+    if snapshot
+        .windows
+        .iter()
+        .any(|window| usage_window_expired(window.resets_at, unix_now()))
+    {
+        print_detail_line("Next", &expired_usage_snapshot_hint("codex"));
+    }
+
     if let Some(credits) = snapshot.credits.as_ref() {
         print_detail_line("Credits", &format_codex_credits(credits, utc_offset));
     }
@@ -1044,10 +1094,7 @@ fn build_usage_windows_table<'a, I>(windows: I, utc_offset: i32) -> String
 where
     I: IntoIterator<Item = (&'a str, u64, f64, i64)>,
 {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let now = unix_now();
 
     let mut table = new_ui_table(vec![
         "Limit",
@@ -1059,36 +1106,78 @@ where
     ]);
 
     for (label, window_minutes, used_percent, resets_at) in windows {
-        let (actual_remaining, actual_seconds) = if resets_at > now {
-            (
-                (100.0 - used_percent).clamp(0.0, 100.0),
-                (resets_at - now) as f64,
-            )
+        let expired = usage_window_expired(resets_at, now);
+
+        let effective_used = if expired { 0.0 } else { used_percent };
+        let effective_remaining = (100.0 - effective_used).clamp(0.0, 100.0);
+
+        let actual_seconds = if expired {
+            (window_minutes * 60) as f64
         } else {
-            (100.0, (window_minutes * 60) as f64)
+            (resets_at - now) as f64
         };
 
         let pacing_str = if window_minutes >= 60 * 24 {
             let days = (actual_seconds / 86400.0).max(0.01);
-            format!("{:.1}%/d", actual_remaining / days)
+            format!("{:.1}%/d", effective_remaining / days)
         } else {
             let hours = (actual_seconds / 3600.0).max(0.01);
-            format!("{:.1}%/h", actual_remaining / hours)
+            format!("{:.1}%/h", effective_remaining / hours)
         };
 
-        let display_remaining = (100.0 - used_percent).clamp(0.0, 100.0);
+        let resets_display = if expired {
+            "expired *".to_string()
+        } else {
+            format_unix_timestamp_utc(resets_at, utc_offset)
+        };
 
         table.add_row(vec![
             Cell::new(label),
             Cell::new(format_window_minutes(window_minutes)),
-            Cell::new(format_percent(used_percent)).set_alignment(CellAlignment::Right),
-            Cell::new(format_percent(display_remaining)).set_alignment(CellAlignment::Right),
+            Cell::new(format_percent(effective_used)).set_alignment(CellAlignment::Right),
+            Cell::new(format_percent(effective_remaining)).set_alignment(CellAlignment::Right),
             Cell::new(pacing_str).set_alignment(CellAlignment::Right),
-            Cell::new(format_unix_timestamp_utc(resets_at, utc_offset)),
+            Cell::new(resets_display),
         ]);
     }
 
     table.to_string()
+}
+
+fn usage_window_expired(resets_at: i64, now: i64) -> bool {
+    resets_at <= now
+}
+
+fn missing_usage_snapshot_hint(cli_name: &str) -> String {
+    match cli_name {
+        "claude" => "open or continue a Claude session in this profile; the statusline writes usage-limits.json after Claude receives a response".to_string(),
+        "codex" => "open or continue a Codex session in this profile; Codex writes fresh rate-limit data to codex/sessions after token_count events".to_string(),
+        other => format!(
+            "open or continue a {} session in this profile to populate local usage data",
+            format_cli_label(other)
+        ),
+    }
+}
+
+fn expired_usage_snapshot_hint(cli_name: &str) -> String {
+    match cli_name {
+        "claude" => "some limits have expired since the last snapshot; open or continue a Claude session in this profile and wait for a response to capture a fresh snapshot".to_string(),
+        "codex" => "some limits have expired since the last snapshot; open or continue a Codex session in this profile to record a fresh token_count snapshot".to_string(),
+        other => format!(
+            "some limits have expired since the last snapshot; open or continue a {} session in this profile to refresh local usage data",
+            format_cli_label(other)
+        ),
+    }
+}
+
+fn expired_usage_rank_hint(cli_name: &str) -> String {
+    match cli_name {
+        "claude" => "some Claude rows are based on expired snapshots; open or continue Claude in the affected profile and wait for a response to write a fresh snapshot".to_string(),
+        "codex" => "some Codex rows are based on expired snapshots; open or continue Codex in the affected profile to record a fresh token_count snapshot".to_string(),
+        other => format!(
+            "some {other} rows are based on expired snapshots; open or continue the CLI in the affected profile to refresh local usage data"
+        ),
+    }
 }
 
 fn format_codex_credits(credits: &CodexCreditsSummary, utc_offset: i32) -> String {
@@ -1139,6 +1228,13 @@ fn format_percent(value: f64) -> String {
     }
 
     format!("{value:.1}%")
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn format_unix_timestamp_utc(timestamp: i64, utc_offset: i32) -> String {
@@ -1508,9 +1604,10 @@ mod tests {
     use crate::config::{CliConfig, Config, GeneralConfig};
 
     use super::{
-        civil_from_days, format_codex_credits, format_limit_subject_detail, format_percent,
+        civil_from_days, expired_usage_rank_hint, expired_usage_snapshot_hint,
+        format_codex_credits, format_limit_subject_detail, format_percent,
         format_unix_timestamp_utc, format_window_minutes, legacy_claude_statusline_script,
-        provision_default_claude_statusline, shell_single_quote,
+        missing_usage_snapshot_hint, provision_default_claude_statusline, shell_single_quote,
         should_update_generated_claude_statusline,
     };
     use crate::account::CodexCreditsSummary;
@@ -1807,5 +1904,20 @@ mod tests {
         assert!(!should_update_generated_claude_statusline(
             "#!/usr/bin/env bash\necho custom\n"
         ));
+    }
+
+    #[test]
+    fn test_missing_usage_snapshot_hint_is_cli_specific() {
+        assert!(
+            missing_usage_snapshot_hint("claude").contains("statusline writes usage-limits.json")
+        );
+        assert!(missing_usage_snapshot_hint("codex").contains("token_count events"));
+    }
+
+    #[test]
+    fn test_expired_usage_hints_are_cli_specific() {
+        assert!(expired_usage_snapshot_hint("claude").contains("wait for a response"));
+        assert!(expired_usage_snapshot_hint("codex").contains("token_count snapshot"));
+        assert!(expired_usage_rank_hint("claude").contains("affected profile"));
     }
 }
