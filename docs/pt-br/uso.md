@@ -173,6 +173,15 @@ Origem dos snapshots:
 - `codex`: le o evento `token_count` mais recente em `profiles/<nome>/codex/sessions` e usa o
   payload `rate_limits` persistido pela CLI do Codex.
 
+Orientacao de refresh:
+
+- `claude`: se ainda nao existir snapshot, ou se alguma janela aparecer como `expired *`, abra ou
+  continue o Claude naquele perfil e aguarde uma resposta. O statusline grava o proximo
+  `usage-limits.json` automaticamente; nao e preciso rodar `/usage`.
+- `codex`: se ainda nao existir snapshot, ou se alguma janela aparecer como `expired *`, abra ou
+  continue o Codex naquele perfil. O `cloak limits` vai aproveitar o proximo snapshot de
+  `token_count` gravado em `codex/sessions`; nao e preciso rodar `/status`.
+
 ## Rankear limites de uso entre perfis
 
 Para ver qual perfil tem a maior porcentagem de limite semanal disponivel para uma dada IA, use:
