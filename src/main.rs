@@ -738,13 +738,14 @@ fn show_limits_rank(cfg: &config::Config, utc_offset: i32) -> Result<()> {
     let mut rendered_any = false;
 
     if cfg.cli.contains_key("claude") {
-        let mut claude_ranks: Vec<(String, Option<String>, f64, u64, i64)> = Vec::new();
+        let mut claude_ranks: Vec<(String, Option<String>, bool, f64, u64, i64)> = Vec::new();
 
         for profile in &profiles {
             if let Ok(ClaudeRateLimitStatus::Available(snapshot)) =
                 inspect_profile_claude_limits(profile, cfg)
             {
                 if let Some(window) = snapshot.windows.iter().find(|w| w.window_minutes == 10080) {
+                    let expired = usage_window_expired(window.resets_at, now);
                     let limit_info = format_limit_subject_detail(
                         snapshot.plan_type.as_deref(),
                         snapshot.rate_limit_tier.as_deref(),
@@ -754,6 +755,7 @@ fn show_limits_rank(cfg: &config::Config, utc_offset: i32) -> Result<()> {
                     claude_ranks.push((
                         profile.clone(),
                         limit_info,
+                        expired,
                         effective_used,
                         window.window_minutes,
                         window.resets_at,
@@ -766,24 +768,28 @@ fn show_limits_rank(cfg: &config::Config, utc_offset: i32) -> Result<()> {
             println!();
             println!("{}", format_section_title("Claude"));
             claude_ranks.sort_by(|a, b| {
-                let avail_a = 100.0 - a.2;
-                let avail_b = 100.0 - b.2;
-                avail_b
-                    .partial_cmp(&avail_a)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                a.2.cmp(&b.2).then_with(|| {
+                    let avail_a = 100.0 - a.3;
+                    let avail_b = 100.0 - b.3;
+                    avail_b
+                        .partial_cmp(&avail_a)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
             });
 
             let mut table = new_ui_table(vec![
                 "Profile",
                 "Limit",
+                "Snapshot",
                 "Used",
                 "Available",
                 "Pacing",
                 "Resets",
             ]);
             let mut any_expired = false;
-            for (profile, limit_info, used_percent, window_minutes, resets_at) in claude_ranks {
-                let expired = resets_at <= now;
+            for (profile, limit_info, expired, used_percent, window_minutes, resets_at) in
+                claude_ranks
+            {
                 if expired {
                     any_expired = true;
                 }
@@ -797,6 +803,7 @@ fn show_limits_rank(cfg: &config::Config, utc_offset: i32) -> Result<()> {
                 table.add_row(vec![
                     Cell::new(&profile),
                     Cell::new(limit_info.as_deref().unwrap_or("-")),
+                    Cell::new(if expired { "expired" } else { "fresh" }),
                     Cell::new(format_percent(used_percent)).set_alignment(CellAlignment::Right),
                     Cell::new(format_percent(available)).set_alignment(CellAlignment::Right),
                     Cell::new(pacing).set_alignment(CellAlignment::Right),
@@ -812,13 +819,14 @@ fn show_limits_rank(cfg: &config::Config, utc_offset: i32) -> Result<()> {
     }
 
     if cfg.cli.contains_key("codex") {
-        let mut codex_ranks: Vec<(String, Option<String>, f64, u64, i64)> = Vec::new();
+        let mut codex_ranks: Vec<(String, Option<String>, bool, f64, u64, i64)> = Vec::new();
 
         for profile in &profiles {
             if let Ok(CodexRateLimitStatus::Available(snapshot)) =
                 inspect_profile_codex_limits(profile, cfg)
             {
                 if let Some(window) = snapshot.windows.iter().find(|w| w.window_minutes == 10080) {
+                    let expired = usage_window_expired(window.resets_at, now);
                     let limit_info = snapshot
                         .limit_name
                         .clone()
@@ -829,6 +837,7 @@ fn show_limits_rank(cfg: &config::Config, utc_offset: i32) -> Result<()> {
                     codex_ranks.push((
                         profile.clone(),
                         limit_info,
+                        expired,
                         effective_used,
                         window.window_minutes,
                         window.resets_at,
@@ -841,24 +850,28 @@ fn show_limits_rank(cfg: &config::Config, utc_offset: i32) -> Result<()> {
             println!();
             println!("{}", format_section_title("Codex"));
             codex_ranks.sort_by(|a, b| {
-                let avail_a = 100.0 - a.2;
-                let avail_b = 100.0 - b.2;
-                avail_b
-                    .partial_cmp(&avail_a)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                a.2.cmp(&b.2).then_with(|| {
+                    let avail_a = 100.0 - a.3;
+                    let avail_b = 100.0 - b.3;
+                    avail_b
+                        .partial_cmp(&avail_a)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
             });
 
             let mut table = new_ui_table(vec![
                 "Profile",
                 "Limit",
+                "Snapshot",
                 "Used",
                 "Available",
                 "Pacing",
                 "Resets",
             ]);
             let mut any_expired = false;
-            for (profile, limit_info, used_percent, window_minutes, resets_at) in codex_ranks {
-                let expired = resets_at <= now;
+            for (profile, limit_info, expired, used_percent, window_minutes, resets_at) in
+                codex_ranks
+            {
                 if expired {
                     any_expired = true;
                 }
@@ -872,6 +885,7 @@ fn show_limits_rank(cfg: &config::Config, utc_offset: i32) -> Result<()> {
                 table.add_row(vec![
                     Cell::new(&profile),
                     Cell::new(limit_info.as_deref().unwrap_or("-")),
+                    Cell::new(if expired { "expired" } else { "fresh" }),
                     Cell::new(format_percent(used_percent)).set_alignment(CellAlignment::Right),
                     Cell::new(format_percent(available)).set_alignment(CellAlignment::Right),
                     Cell::new(pacing).set_alignment(CellAlignment::Right),
