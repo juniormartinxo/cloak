@@ -97,7 +97,7 @@ cd ~/side-project      && claude   # ← usa o perfil "personal"
 # 5. Inspecione o contexto atual
 cloak profile show
 cloak profile account work
-cloak profile limits work
+cloak limits work
 
 # 6. Instale MCPs dentro do perfil
 cloak mcp install codex filesystem --profile work -- npx @modelcontextprotocol/server-filesystem /tmp
@@ -125,13 +125,14 @@ codex -> Jane Doe <jane@example.com>
 gemini -> Gem User <gem@example.com>
 ```
 
-`cloak profile limits <nome>` le os snapshots locais de limites disponiveis naquele perfil:
+`cloak limits [nome]` lê os snapshots locais disponíveis. Se omitido o nome do perfil, exibe de todos os perfis:
 
 - `claude`: le `claude/usage-limits.json`, preenchido pelo statusline padrao do Claude depois que o
   Claude recebe pelo menos uma resposta naquele perfil. Mostra os percentuais mais recentes das
-  janelas de 5 horas e 7 dias, alem dos timestamps de reset.
+  janelas de 5 horas e 7 dias, logica adaptativa de pacing (%/h ou %/d) baseada no tempo restante,
+  alem dos timestamps de reset.
 - `codex`: le o evento `token_count` mais recente em `codex/sessions` e mostra as janelas
-  registradas, o percentual restante e os timestamps de reset.
+  registradas, o percentual restante, a taxa de pacing e os timestamps de reset.
 
 `cloak mcp install` instala servidores MCP dentro do perfil selecionado no `cloak`, traduzindo a
 configuracao para a sintaxe nativa de cada CLI suportada:
@@ -247,7 +248,8 @@ cloak exec <cli> [--profile <nome>] [args...]
 cloak use <profile>                Escreve .cloak no diretório atual
 cloak profile list                 Lista todos os perfis
 cloak profile account <nome>       Mostra qual conta cada CLI esta usando dentro de um perfil
-cloak profile limits <nome>        Mostra uso/restante de Claude/Codex e quando os limites resetam
+cloak limits [nome]                Mostra uso/restante/pacing de Claude/Codex (omita <nome> para todos)
+cloak limits rank                  Classifica perfis por limite semanal disponível (agrupado por IA)
 cloak profile create <nome>        Cria diretórios de perfil (+ template de statusline do Claude no Unix)
 cloak profile delete <nome> [-y]   Deleta um perfil
 cloak profile show                 Mostra o perfil resolvido e caminhos de env para cada CLI
@@ -302,7 +304,7 @@ Quando você cria um perfil no Unix, o `cloak` provisiona um script de statuslin
 
 O script le o stdin em JSON do Claude, imprime uma linha compacta com **modelo / tokens de
 contexto / custo** (requer `jq`) e persiste o snapshot mais recente de `rate_limits` do Claude em
-`usage-limits.json` para o `cloak profile limits`. Um `settings.json` existente com uma chave
+`usage-limits.json` para o `cloak limits`. Um `settings.json` existente com uma chave
 `statusLine` nunca e sobrescrito.
 
 ---
