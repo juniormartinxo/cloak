@@ -10,6 +10,7 @@ use serde::Deserialize;
 use crate::paths;
 
 pub const RECOMMENDED_CLI_NAMES: [&str; 3] = ["claude", "codex", "gemini"];
+pub const PROFILE_MANAGED_CLI_NAMES: [&str; 3] = RECOMMENDED_CLI_NAMES;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -96,6 +97,33 @@ pub fn missing_recommended_cli_names(config: &Config) -> Vec<String> {
     }
 
     missing
+}
+
+pub fn is_profile_management_enabled(cli_name: &str) -> bool {
+    PROFILE_MANAGED_CLI_NAMES.contains(&cli_name)
+}
+
+pub fn ensure_profile_management_enabled(cli_name: &str) -> Result<()> {
+    if is_profile_management_enabled(cli_name) {
+        return Ok(());
+    }
+
+    Err(eyre!(
+        "profile management for CLI '{}' is temporarily disabled; enabled CLIs: {}",
+        cli_name,
+        PROFILE_MANAGED_CLI_NAMES.join(", ")
+    ))
+}
+
+pub fn profile_managed_cli_names(config: &Config) -> Vec<String> {
+    let mut cli_names: Vec<String> = config
+        .cli
+        .keys()
+        .filter(|cli_name| is_profile_management_enabled(cli_name.as_str()))
+        .cloned()
+        .collect();
+    cli_names.sort();
+    cli_names
 }
 
 pub fn append_default_cli_blocks(config_path: &Path, cli_names: &[String]) -> Result<Vec<String>> {
@@ -331,6 +359,24 @@ config_dir_env = "CODEX_HOME"
         let parsed = parse_config_str(raw, Path::new("config.toml")).expect("parse");
         let missing = missing_recommended_cli_names(&parsed);
         assert_eq!(missing, vec!["gemini"]);
+    }
+
+    #[test]
+    fn test_profile_managed_cli_names_filters_temporarily_disabled_entries() {
+        let raw = r#"
+[general]
+default_profile = "personal"
+
+[cli.claude]
+binary = "claude"
+config_dir_env = "CLAUDE_CONFIG_DIR"
+
+[cli.cursor]
+binary = "cursor"
+"#;
+
+        let parsed = parse_config_str(raw, Path::new("config.toml")).expect("parse");
+        assert_eq!(super::profile_managed_cli_names(&parsed), vec!["claude"]);
     }
 
     #[test]
