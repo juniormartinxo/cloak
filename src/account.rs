@@ -101,6 +101,13 @@ pub fn inspect_profile_accounts(profile: &str, cfg: &Config) -> Result<Vec<CliAc
     Ok(accounts)
 }
 
+pub fn profile_email(profile: &str) -> Option<String> {
+    let cli_dir = paths::profile_cli_dir(profile, "claude").ok()?;
+    let config_path = cli_dir.join(".claude.json");
+    let parsed = read_json(&config_path).ok()?;
+    first_nonempty_str(&parsed, &["/oauthAccount/emailAddress"]).map(ToString::to_string)
+}
+
 pub fn inspect_profile_codex_limits(profile: &str, cfg: &Config) -> Result<CodexRateLimitStatus> {
     paths::validate_profile_name(profile)?;
 
@@ -158,6 +165,10 @@ fn inspect_claude(cli_dir: &Path) -> Result<AccountStatus> {
         return Ok(AccountStatus::Identified { display });
     }
 
+    if let Some(display) = claude_identity_from_config(cli_dir) {
+        return Ok(AccountStatus::Identified { display });
+    }
+
     let subscription = first_nonempty_str(
         &parsed,
         &[
@@ -174,6 +185,16 @@ fn inspect_claude(cli_dir: &Path) -> Result<AccountStatus> {
     };
 
     Ok(AccountStatus::CredentialsPresent { detail })
+}
+
+fn claude_identity_from_config(cli_dir: &Path) -> Option<String> {
+    let config_path = cli_dir.join(".claude.json");
+    let parsed = read_json(&config_path).ok()?;
+    display_from_paths(
+        &parsed,
+        &["/oauthAccount/emailAddress"],
+        &["/oauthAccount/displayName"],
+    )
 }
 
 fn inspect_codex(cli_dir: &Path) -> Result<AccountStatus> {
@@ -739,6 +760,38 @@ mod tests {
             AccountStatus::CredentialsPresent {
                 detail: "credentials detected, but account identifier unavailable (plan: max)"
                     .to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_inspect_claude_extracts_identity_from_claude_json() {
+        let tmp = tempdir().expect("tempdir");
+        let credentials = json!({
+            "claudeAiOauth": {
+                "accessToken": "opaque-token",
+                "subscriptionType": "max"
+            }
+        });
+        let config = json!({
+            "oauthAccount": {
+                "emailAddress": "jane@example.com",
+                "displayName": "Jane Doe"
+            }
+        });
+
+        fs::write(
+            tmp.path().join(".credentials.json"),
+            credentials.to_string(),
+        )
+        .expect("write .credentials.json");
+        fs::write(tmp.path().join(".claude.json"), config.to_string()).expect("write .claude.json");
+
+        let status = inspect_claude(tmp.path()).expect("inspect");
+        assert_eq!(
+            status,
+            AccountStatus::Identified {
+                display: "Jane Doe <jane@example.com>".to_string()
             }
         );
     }
