@@ -89,8 +89,7 @@ pub enum ClaudeRateLimitStatus {
 pub fn inspect_profile_accounts(profile: &str, cfg: &Config) -> Result<Vec<CliAccountInfo>> {
     paths::validate_profile_name(profile)?;
 
-    let mut cli_names: Vec<String> = cfg.cli.keys().cloned().collect();
-    cli_names.sort();
+    let cli_names = crate::config::profile_managed_cli_names(cfg);
 
     let mut accounts = Vec::with_capacity(cli_names.len());
     for cli_name in cli_names {
