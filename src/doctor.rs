@@ -154,16 +154,25 @@ fn check_profiles(config: &Config) -> Result<ProfileSummary> {
         });
     }
 
+    let cli_names = crate::config::profile_managed_cli_names(config);
+
+    if cli_names.is_empty() {
+        return Ok(ProfileSummary {
+            profiles: profile_dirs.len(),
+            cli_dirs_present: 0,
+            cli_dirs_missing: 0,
+            credentials_detected: 0,
+            credentials_missing: 0,
+        });
+    }
+
     let mut cli_dirs_present = 0usize;
     let mut cli_dirs_missing = 0usize;
     let mut credentials_detected = 0usize;
     let mut credentials_missing = 0usize;
 
     for profile_dir in profile_dirs {
-        let mut cli_names: Vec<&String> = config.cli.keys().collect();
-        cli_names.sort();
-
-        for cli_name in cli_names {
+        for cli_name in &cli_names {
             let cli_dir = profile_dir.join(cli_name);
             if !cli_dir.exists() {
                 cli_dirs_missing += 1;
@@ -211,6 +220,13 @@ fn print_profiles_table(config: &Config) -> Result<()> {
         return Ok(());
     }
 
+    let cli_names = crate::config::profile_managed_cli_names(config);
+
+    if cli_names.is_empty() {
+        print_detail_line("Status", "No profile-managed CLI is currently enabled.");
+        return Ok(());
+    }
+
     for (index, profile_dir) in profile_dirs.iter().enumerate() {
         let profile_name = profile_dir
             .file_name()
@@ -227,10 +243,7 @@ fn print_profiles_table(config: &Config) -> Result<()> {
         );
         let mut table = new_ui_table(vec!["CLI", "Directory", "Credentials"]);
 
-        let mut cli_names: Vec<&String> = config.cli.keys().collect();
-        cli_names.sort();
-
-        for cli_name in cli_names {
+        for cli_name in &cli_names {
             let cli_dir = profile_dir.join(cli_name);
             if !cli_dir.exists() {
                 table.add_row(vec![
