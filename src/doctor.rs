@@ -11,7 +11,7 @@ use comfy_table::{
 use owo_colors::OwoColorize;
 use serde_json::Value;
 
-use crate::{config::Config, paths};
+use crate::{account, config::Config, paths};
 
 struct BinarySummary {
     configured: usize,
@@ -237,10 +237,11 @@ fn print_profiles_table(config: &Config) -> Result<()> {
             println!();
         }
 
-        println!(
-            "{}",
-            format_section_title(&format!("Profile '{}'", profile_name))
-        );
+        let title = match account::profile_email(profile_name) {
+            Some(email) => format!("Profile '{}' <{}>", profile_name, email),
+            None => format!("Profile '{}'", profile_name),
+        };
+        println!("{}", format_section_title(&title));
         let mut table = new_ui_table(vec!["CLI", "Directory", "Credentials"]);
 
         for cli_name in &cli_names {
