@@ -180,9 +180,11 @@ fn main() -> Result<()> {
                         "No profiles found. Run: cloak profile create <name>",
                     );
                 } else {
-                    for p in profiles {
-                        show_profile_limits(&p, &loaded.config, utc.unwrap_or(0))?;
-                        println!();
+                    for (i, p) in profiles.iter().enumerate() {
+                        if i > 0 {
+                            print_profile_separator();
+                        }
+                        show_profile_limits(p, &loaded.config, utc.unwrap_or(0))?;
                     }
                 }
             }
@@ -371,11 +373,10 @@ fn create_profile(name: &str, cfg: &config::Config) -> Result<()> {
 
     paths::ensure_secure_dir(&profile_dir)?;
 
-    let mut cli_names: Vec<&String> = cfg.cli.keys().collect();
-    cli_names.sort();
+    let cli_names = config::profile_managed_cli_names(cfg);
 
     for cli_name in cli_names {
-        let cli_dir = profile_dir.join(cli_name);
+        let cli_dir = profile_dir.join(&cli_name);
         paths::ensure_secure_dir(&cli_dir)?;
     }
 
@@ -521,25 +522,30 @@ fn show_profile(resolved: &ResolvedProfile, cfg: &config::Config) -> Result<()> 
         }
     }
 
-    let mut cli_names: Vec<&String> = cfg.cli.keys().collect();
-    cli_names.sort();
+    let cli_names = config::profile_managed_cli_names(cfg);
 
     println!();
     println!("{}", format_section_title("CLI Configuration"));
+
+    if cli_names.is_empty() {
+        print_detail_line("Status", "no profile-managed CLI is currently enabled");
+        return Ok(());
+    }
+
     let mut table = new_ui_table(vec!["CLI", "Setting", "Value"]);
 
     for cli_name in cli_names {
-        let cli_cfg = &cfg.cli[cli_name];
-        let cli_dir = paths::profile_cli_dir(&resolved.name, cli_name)?;
+        let cli_cfg = &cfg.cli[&cli_name];
+        let cli_dir = paths::profile_cli_dir(&resolved.name, &cli_name)?;
         table.add_row(vec![
-            Cell::new(format_cli_label(cli_name)),
+            Cell::new(format_cli_label(&cli_name)),
             Cell::new("profile_dir"),
             Cell::new(display_path(&cli_dir)),
         ]);
 
         if let Some(config_dir_env) = &cli_cfg.config_dir_env {
             table.add_row(vec![
-                Cell::new(format_cli_label(cli_name)),
+                Cell::new(format_cli_label(&cli_name)),
                 Cell::new(config_dir_env),
                 Cell::new(display_path(&cli_dir)),
             ]);
@@ -549,12 +555,12 @@ fn show_profile(resolved: &ResolvedProfile, cfg: &config::Config) -> Result<()> 
         extra_env.sort_by(|a, b| a.0.cmp(b.0));
         for (name, value) in extra_env {
             table.add_row(vec![
-                Cell::new(format_cli_label(cli_name)),
+                Cell::new(format_cli_label(&cli_name)),
                 Cell::new(name),
                 Cell::new(exec::render_template(
                     value,
                     &exec::TemplateContext {
-                        cli_name,
+                        cli_name: &cli_name,
                         profile: &resolved.name,
                         profile_dir: &cli_dir,
                     },
@@ -565,10 +571,10 @@ fn show_profile(resolved: &ResolvedProfile, cfg: &config::Config) -> Result<()> 
         let resolved_binary = which::which(&cli_cfg.binary)
             .unwrap_or_else(|_| std::path::PathBuf::from(&cli_cfg.binary));
         if let Some(agent_folder) =
-            exec::resolve_remote_agent_folder(cli_name, &resolved_binary, &cli_dir)
+            exec::resolve_remote_agent_folder(&cli_name, &resolved_binary, &cli_dir)
         {
             table.add_row(vec![
-                Cell::new(format_cli_label(cli_name)),
+                Cell::new(format_cli_label(&cli_name)),
                 Cell::new("VSCODE_AGENT_FOLDER"),
                 Cell::new(display_path(&agent_folder)),
             ]);
@@ -582,7 +588,7 @@ fn show_profile(resolved: &ResolvedProfile, cfg: &config::Config) -> Result<()> 
                     exec::render_template(
                         arg,
                         &exec::TemplateContext {
-                            cli_name,
+                            cli_name: &cli_name,
                             profile: &resolved.name,
                             profile_dir: &cli_dir,
                         },
@@ -591,7 +597,7 @@ fn show_profile(resolved: &ResolvedProfile, cfg: &config::Config) -> Result<()> 
                 .collect::<Vec<_>>()
                 .join(" ");
             table.add_row(vec![
-                Cell::new(format_cli_label(cli_name)),
+                Cell::new(format_cli_label(&cli_name)),
                 Cell::new("launch_args"),
                 Cell::new(rendered_args),
             ]);
@@ -1058,6 +1064,14 @@ fn print_codex_limits_snapshot(snapshot: &CodexRateLimitSnapshot, utc_offset: i3
 
     if let Some(credits) = snapshot.credits.as_ref() {
         print_detail_line("Credits", &format_codex_credits(credits, utc_offset));
+    }
+}
+
+fn print_profile_separator() {
+    if io::stdout().is_terminal() {
+        println!("\n{}", "──────────────────────────────────".dimmed());
+    } else {
+        println!("\n──────────────────────────────────");
     }
 }
 
