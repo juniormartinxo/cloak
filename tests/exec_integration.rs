@@ -27,7 +27,7 @@ mod unix_exec_tests {
 
         let output = Command::new(cloak_bin())
             .arg("exec")
-            .arg("mock")
+            .arg("codex")
             .arg("--")
             .arg("alpha")
             .arg("beta")
@@ -48,12 +48,12 @@ mod unix_exec_tests {
             .join("cloak")
             .join("profiles")
             .join("work")
-            .join("mock");
+            .join("codex");
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.contains(&format!("MOCK_HOME={}", expected_profile_home.display())),
-            "missing MOCK_HOME in stdout:\n{stdout}"
+            stdout.contains(&format!("CODEX_HOME={}", expected_profile_home.display())),
+            "missing CODEX_HOME in stdout:\n{stdout}"
         );
         assert!(
             stdout.contains("OPENAI_API_KEY=<unset>"),
@@ -146,7 +146,7 @@ mod unix_exec_tests {
     }
 
     #[test]
-    fn exec_applies_templated_launch_args_and_extra_env() {
+    fn exec_rejects_temporarily_disabled_editor_profile_management() {
         let tmp = tempdir().expect("tempdir");
         let bin_dir = tmp.path().join("bin");
         let repo = tmp.path().join("repo-cursor");
@@ -170,64 +170,37 @@ mod unix_exec_tests {
             .expect("run cloak exec");
 
         assert!(
-            output.status.success(),
+            !output.status.success(),
             "stdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
 
-        let expected_profile_home = xdg_config_home
-            .join("cloak")
-            .join("profiles")
-            .join("work")
-            .join("cursor");
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stdout.contains(&format!(
-                "CURSOR_USER_DATA_DIR={}",
-                expected_profile_home.display()
-            )),
-            "missing CURSOR_USER_DATA_DIR in stdout:\n{stdout}"
-        );
-        assert!(
-            stdout.contains(&format!(
-                "CURSOR_EXTENSIONS_DIR={}/extensions",
-                expected_profile_home.display()
-            )),
-            "missing CURSOR_EXTENSIONS_DIR in stdout:\n{stdout}"
-        );
-        assert!(
-            stdout.contains(&format!(
-                "ARGS=--user-data-dir {} --extensions-dir {}/extensions --new-window repo-cursor",
-                expected_profile_home.display(),
-                expected_profile_home.display()
-            )),
-            "launch args were not rendered as expected:\n{stdout}"
+            stderr.contains("profile management for CLI 'cursor' is temporarily disabled"),
+            "missing disabled CLI error:\n{stderr}"
         );
     }
 
     #[test]
-    fn exec_cursor_defaults_to_current_directory_when_no_target_is_forwarded() {
+    fn profile_create_skips_temporarily_disabled_editor_cli_dirs() {
         let tmp = tempdir().expect("tempdir");
         let bin_dir = tmp.path().join("bin");
-        let repo = tmp.path().join("repo-cursor-default-dir");
         let xdg_config_home = tmp.path().join("xdg");
 
         fs::create_dir_all(&bin_dir).expect("create bin dir");
-        fs::create_dir_all(&repo).expect("create repo dir");
 
         let mock_binary = create_mock_binary(&bin_dir);
         write_editor_config(&xdg_config_home, &mock_binary, "personal");
-        fs::write(repo.join(".cloak"), "profile = \"work\"\n").expect("write .cloak");
 
         let output = Command::new(cloak_bin())
-            .arg("exec")
-            .arg("cursor")
-            .current_dir(&repo)
+            .arg("profile")
+            .arg("create")
+            .arg("work")
             .env("XDG_CONFIG_HOME", &xdg_config_home)
             .output()
-            .expect("run cloak exec");
+            .expect("run cloak profile create");
 
         assert!(
             output.status.success(),
@@ -236,20 +209,13 @@ mod unix_exec_tests {
             String::from_utf8_lossy(&output.stderr)
         );
 
-        let expected_profile_home = xdg_config_home
-            .join("cloak")
-            .join("profiles")
-            .join("work")
-            .join("cursor");
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.contains(&format!(
-                "ARGS=--user-data-dir {} --extensions-dir {}/extensions --new-window .",
-                expected_profile_home.display(),
-                expected_profile_home.display()
-            )),
-            "cursor should default to current directory when no target is passed:\n{stdout}"
+            xdg_config_home.join("cloak/profiles/work").is_dir(),
+            "profile root should be created"
+        );
+        assert!(
+            !xdg_config_home.join("cloak/profiles/work/cursor").exists(),
+            "disabled cursor dir should not be created"
         );
     }
 
@@ -269,7 +235,7 @@ mod unix_exec_tests {
 
         let output = Command::new(cloak_bin())
             .arg("exec")
-            .arg("mock")
+            .arg("codex")
             .arg("--profile")
             .arg("override")
             .arg("alpha")
@@ -290,11 +256,11 @@ mod unix_exec_tests {
             .join("cloak")
             .join("profiles")
             .join("override")
-            .join("mock");
+            .join("codex");
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.contains(&format!("MOCK_HOME={}", expected_profile_home.display())),
+            stdout.contains(&format!("CODEX_HOME={}", expected_profile_home.display())),
             "explicit profile path not found in stdout:\n{stdout}"
         );
         assert!(
@@ -318,7 +284,7 @@ mod unix_exec_tests {
 
         let output = Command::new(cloak_bin())
             .arg("exec")
-            .arg("mock")
+            .arg("codex")
             .current_dir(&repo)
             .env("XDG_CONFIG_HOME", &xdg_config_home)
             .output()
@@ -335,11 +301,11 @@ mod unix_exec_tests {
             .join("cloak")
             .join("profiles")
             .join("personal")
-            .join("mock");
+            .join("codex");
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.contains(&format!("MOCK_HOME={}", expected_profile_home.display())),
+            stdout.contains(&format!("CODEX_HOME={}", expected_profile_home.display())),
             "default profile path not found in stdout:\n{stdout}"
         );
     }
@@ -365,7 +331,7 @@ mod unix_exec_tests {
 
         let output = Command::new(cloak_bin())
             .arg("exec")
-            .arg("mock")
+            .arg("codex")
             .current_dir(real_repo.join("sub"))
             .env("PWD", &logical_subdir)
             .env("XDG_CONFIG_HOME", &xdg_config_home)
@@ -383,11 +349,11 @@ mod unix_exec_tests {
             .join("cloak")
             .join("profiles")
             .join("work")
-            .join("mock");
+            .join("codex");
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.contains(&format!("MOCK_HOME={}", expected_profile_home.display())),
+            stdout.contains(&format!("CODEX_HOME={}", expected_profile_home.display())),
             "logical PWD .cloak should win over physical path:\n{stdout}"
         );
     }
@@ -480,14 +446,13 @@ mod unix_exec_tests {
             stdout.contains("CLI Configuration"),
             "missing configuration section:\n{stdout}"
         );
-        assert!(stdout.contains("Cursor"), "missing cursor row:\n{stdout}");
         assert!(
-            stdout.contains("CURSOR_USER_DATA_DIR"),
-            "missing extra env row:\n{stdout}"
+            stdout.contains("no profile-managed CLI is currently enabled"),
+            "missing disabled-cli status:\n{stdout}"
         );
         assert!(
-            stdout.contains("launch_args"),
-            "missing launch args row:\n{stdout}"
+            !stdout.contains("Cursor"),
+            "cursor row should be hidden:\n{stdout}"
         );
     }
 
@@ -1009,14 +974,14 @@ mod unix_exec_tests {
         let bin_dir = tmp.path().join("bin");
         let xdg_config_home = tmp.path().join("xdg");
         let profiles_root = xdg_config_home.join("cloak").join("profiles");
-        let work_dir = profiles_root.join("work").join("mock");
+        let work_dir = profiles_root.join("work").join("codex");
 
         fs::create_dir_all(&bin_dir).expect("create bin dir");
         fs::create_dir_all(&work_dir).expect("create profile dir");
 
         let mock_binary = create_mock_binary(&bin_dir);
         write_config(&xdg_config_home, &mock_binary, "personal");
-        fs::write(work_dir.join("some-config.json"), "{}").expect("write hint file");
+        fs::write(work_dir.join("auth.json"), "{}").expect("write auth hint");
 
         let output = Command::new(cloak_bin())
             .arg("doctor")
@@ -1064,7 +1029,7 @@ mod unix_exec_tests {
             stdout.contains("  Binaries: 1 found, 0 missing"),
             "missing binaries summary:\n{stdout}"
         );
-        assert!(stdout.contains("mock"), "missing mock row:\n{stdout}");
+        assert!(stdout.contains("Codex"), "missing codex row:\n{stdout}");
         assert!(stdout.contains("found"), "missing binary status:\n{stdout}");
         assert!(
             stdout.contains("/bin/mock-cli.sh"),
@@ -1075,7 +1040,7 @@ mod unix_exec_tests {
             "missing credential hint:\n{stdout}"
         );
         assert!(
-            stdout.contains("Mock"),
+            stdout.contains("Codex"),
             "missing profile cli row:\n{stdout}"
         );
     }
@@ -1356,7 +1321,7 @@ echo "ARGS=$*"
         fs::create_dir_all(&cloak_dir).expect("create cloak config dir");
 
         let config = format!(
-            "[general]\ndefault_profile = \"{}\"\n\n[cli.mock]\nbinary = \"{}\"\nconfig_dir_env = \"MOCK_HOME\"\nremove_env_vars = [\"OPENAI_API_KEY\"]\n",
+            "[general]\ndefault_profile = \"{}\"\n\n[cli.codex]\nbinary = \"{}\"\nconfig_dir_env = \"CODEX_HOME\"\nremove_env_vars = [\"OPENAI_API_KEY\"]\n",
             default_profile,
             mock_binary.display()
         );
