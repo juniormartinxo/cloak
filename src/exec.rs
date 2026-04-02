@@ -9,7 +9,10 @@ use std::os::unix::process::CommandExt;
 
 use color_eyre::eyre::{eyre, Context, Result};
 
-use crate::{config::Config, paths};
+use crate::{
+    config::{self, Config},
+    paths,
+};
 
 pub fn exec_cli(cli_name: &str, profile: &str, args: &[String], config: &Config) -> Result<()> {
     let mut cmd = prepare_exec_command(cli_name, profile, args, config)?;
@@ -83,6 +86,8 @@ fn prepare_cli_command_with_context(
         .get(cli_name)
         .cloned()
         .ok_or_else(|| eyre!("CLI '{}' not configured in config.toml", cli_name))?;
+
+    config::ensure_profile_management_enabled(cli_name)?;
 
     let binary = which::which(&cli_cfg.binary).wrap_err_with(|| {
         format!(
@@ -229,9 +234,9 @@ fn _is_profile_dir_empty(path: &std::path::Path) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{collections::HashMap, path::Path};
 
-    use crate::config::CliConfig;
+    use crate::config::{CliConfig, Config, GeneralConfig};
 
     use super::{
         is_cursor_wsl_wrapper, is_interactive_terminal, render_template, resolve_effective_launch,
@@ -371,5 +376,31 @@ mod tests {
         unsafe {
             std::env::remove_var("WSL_DISTRO_NAME");
         }
+    }
+
+    #[test]
+    fn prepare_cli_command_rejects_temporarily_disabled_profile_managed_cli() {
+        let cfg = Config {
+            general: GeneralConfig {
+                default_profile: "personal".to_string(),
+            },
+            cli: HashMap::from([(
+                "cursor".to_string(),
+                CliConfig {
+                    binary: "cursor".to_string(),
+                    config_dir_env: None,
+                    remove_env_vars: vec![],
+                    extra_env: HashMap::new(),
+                    launch_args: vec![],
+                },
+            )]),
+        };
+
+        let err = super::prepare_cli_command("cursor", "work", &cfg).expect_err("must fail");
+        assert!(
+            err.to_string()
+                .contains("profile management for CLI 'cursor' is temporarily disabled"),
+            "unexpected error: {err}"
+        );
     }
 }
