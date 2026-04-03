@@ -31,3 +31,4 @@ start.md
 .claude/*
 .gitnexus
 .codex
+node_modules/
