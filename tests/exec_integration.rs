@@ -2,9 +2,10 @@
 mod unix_exec_tests {
     use std::{
         fs,
+        io::Write,
         os::unix::{fs as unix_fs, fs::PermissionsExt},
         path::{Path, PathBuf},
-        process::Command,
+        process::{Command, Stdio},
     };
 
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -231,6 +232,8 @@ mod unix_exec_tests {
 
         let mock_binary = create_mock_binary(&bin_dir);
         write_config(&xdg_config_home, &mock_binary, "personal");
+        fs::create_dir_all(xdg_config_home.join("cloak/profiles/override/codex"))
+            .expect("create override profile");
         fs::write(repo.join(".cloak"), "profile = \"work\"\n").expect("write .cloak");
 
         let output = Command::new(cloak_bin())
@@ -266,6 +269,157 @@ mod unix_exec_tests {
         assert!(
             stdout.contains("ARGS=alpha beta"),
             "args were not forwarded as expected:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn exec_explicit_profile_offers_to_create_missing_profile_and_continues() {
+        let tmp = tempdir().expect("tempdir");
+        let bin_dir = tmp.path().join("bin");
+        let repo = tmp.path().join("repo-missing-profile");
+        let xdg_config_home = tmp.path().join("xdg");
+        let profiles_root = xdg_config_home.join("cloak").join("profiles");
+
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+        fs::create_dir_all(&repo).expect("create repo dir");
+        fs::create_dir_all(profiles_root.join("personal/codex")).expect("create personal profile");
+        fs::create_dir_all(profiles_root.join("work/codex")).expect("create work profile");
+
+        let mock_binary = create_mock_binary(&bin_dir);
+        write_config(&xdg_config_home, &mock_binary, "personal");
+
+        let mut child = Command::new(cloak_bin())
+            .arg("exec")
+            .arg("codex")
+            .arg("--profile")
+            .arg("override")
+            .arg("alpha")
+            .current_dir(&repo)
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn cloak exec");
+
+        child
+            .stdin
+            .take()
+            .expect("child stdin")
+            .write_all(b"y\n")
+            .expect("write confirmation");
+
+        let output = child.wait_with_output().expect("wait for cloak exec");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let expected_profile_home = xdg_config_home
+            .join("cloak")
+            .join("profiles")
+            .join("override")
+            .join("codex");
+
+        assert!(
+            expected_profile_home.is_dir(),
+            "missing created profile dir: {}",
+            expected_profile_home.display()
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("Profile 'override' does not exist."),
+            "missing missing-profile message:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("Existing profiles:"),
+            "missing existing profiles section:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("- personal (default)") && stdout.contains("- work"),
+            "missing existing profile names:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("Create it now? [y/N]:"),
+            "missing creation prompt:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("CODEX_HOME={}", expected_profile_home.display())),
+            "missing exec output for created profile:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn exec_explicit_profile_reports_existing_profiles_when_creation_is_declined() {
+        let tmp = tempdir().expect("tempdir");
+        let bin_dir = tmp.path().join("bin");
+        let repo = tmp.path().join("repo-missing-profile-decline");
+        let xdg_config_home = tmp.path().join("xdg");
+        let profiles_root = xdg_config_home.join("cloak").join("profiles");
+
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+        fs::create_dir_all(&repo).expect("create repo dir");
+        fs::create_dir_all(profiles_root.join("personal/codex")).expect("create personal profile");
+        fs::create_dir_all(profiles_root.join("work/codex")).expect("create work profile");
+
+        let mock_binary = create_mock_binary(&bin_dir);
+        write_config(&xdg_config_home, &mock_binary, "personal");
+
+        let mut child = Command::new(cloak_bin())
+            .arg("exec")
+            .arg("codex")
+            .arg("--profile")
+            .arg("override")
+            .current_dir(&repo)
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn cloak exec");
+
+        child
+            .stdin
+            .take()
+            .expect("child stdin")
+            .write_all(b"n\n")
+            .expect("write confirmation");
+
+        let output = child.wait_with_output().expect("wait for cloak exec");
+
+        assert!(
+            !output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("Profile 'override' does not exist."),
+            "missing missing-profile message:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("Existing profiles:"),
+            "missing existing profiles section:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("- personal (default)") && stdout.contains("- work"),
+            "missing existing profile names:\n{stdout}"
+        );
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("Profile 'override' was not created."),
+            "missing declined-creation message:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("Use one of the existing profiles: personal, work"),
+            "missing existing-profile guidance:\n{stderr}"
         );
     }
 
