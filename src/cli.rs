@@ -130,6 +130,10 @@ pub enum McpCommands {
         #[arg(long)]
         bearer_token_env_var: Option<String>,
 
+        /// Run the command after `--` directly with profile env, bypassing the CLI's native `mcp add`
+        #[arg(long)]
+        raw: bool,
+
         /// Stdio command forwarded after `--`
         #[arg(allow_hyphen_values = true)]
         command: Vec<String>,
@@ -315,12 +319,14 @@ mod tests {
                 env,
                 header,
                 bearer_token_env_var,
+                raw,
                 command,
             }) => {
                 assert_eq!(cli, "codex");
                 assert_eq!(name, "filesystem");
                 assert_eq!(profile.as_deref(), Some("work"));
                 assert!(!all_profiles);
+                assert!(!raw);
                 assert_eq!(transport, McpTransport::Stdio);
                 assert_eq!(url, None);
                 assert_eq!(env, vec!["API_KEY=secret"]);
@@ -329,6 +335,47 @@ mod tests {
                 assert_eq!(
                     command,
                     vec!["npx", "@modelcontextprotocol/server-filesystem", "/tmp",]
+                );
+            }
+            _ => panic!("expected mcp install command"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_install_parses_raw_flag() {
+        let parsed = Cli::parse_from([
+            "cloak",
+            "mcp",
+            "install",
+            "codex",
+            "shadcn",
+            "--all-profiles",
+            "--raw",
+            "--",
+            "npx",
+            "shadcn@latest",
+            "mcp",
+            "init",
+            "--client",
+            "codex",
+        ]);
+
+        match parsed.command {
+            Commands::Mcp(McpCommands::Install {
+                cli,
+                name,
+                all_profiles,
+                raw,
+                command,
+                ..
+            }) => {
+                assert_eq!(cli, "codex");
+                assert_eq!(name, "shadcn");
+                assert!(all_profiles);
+                assert!(raw);
+                assert_eq!(
+                    command,
+                    vec!["npx", "shadcn@latest", "mcp", "init", "--client", "codex"]
                 );
             }
             _ => panic!("expected mcp install command"),
