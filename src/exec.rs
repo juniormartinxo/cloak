@@ -190,6 +190,45 @@ pub(crate) fn render_template(template: &str, context: &TemplateContext<'_>) -> 
         .replace("{cli_name}", context.cli_name)
 }
 
+pub fn prepare_raw_command_with_profile_env(
+    cli_name: &str,
+    profile: &str,
+    program: &str,
+    config: &Config,
+) -> Result<Command> {
+    let cli_cfg = config
+        .cli
+        .get(cli_name)
+        .cloned()
+        .ok_or_else(|| eyre!("CLI '{}' not configured in config.toml", cli_name))?;
+
+    config::ensure_profile_management_enabled(cli_name)?;
+
+    let profile_dir = paths::profile_cli_dir(profile, cli_name)?;
+    ensure_profile_cli_dir(&profile_dir, profile, cli_name)?;
+    let template_context = TemplateContext {
+        cli_name,
+        profile,
+        profile_dir: &profile_dir,
+    };
+
+    let mut cmd = Command::new(program);
+
+    if let Some(config_dir_env) = &cli_cfg.config_dir_env {
+        cmd.env(config_dir_env, &profile_dir);
+    }
+
+    for (name, value) in &cli_cfg.extra_env {
+        cmd.env(name, render_template(value, &template_context));
+    }
+
+    for var in &cli_cfg.remove_env_vars {
+        cmd.env_remove(var);
+    }
+
+    Ok(cmd)
+}
+
 fn ensure_profile_cli_dir(path: &std::path::Path, profile: &str, cli_name: &str) -> Result<()> {
     let existed_before = path.exists();
 
