@@ -51,6 +51,9 @@ fn main() -> Result<()> {
             let selected_profile = match profile {
                 Some(name) => {
                     paths::validate_profile_name(&name)?;
+                    if !ensure_exec_profile_exists(&name, &loaded.config)? {
+                        std::process::exit(1);
+                    }
                     name
                 }
                 None => {
@@ -150,6 +153,7 @@ fn main() -> Result<()> {
                 env,
                 header,
                 bearer_token_env_var,
+                raw,
                 command,
             } => {
                 install_mcp(
@@ -164,6 +168,7 @@ fn main() -> Result<()> {
                         env: &env,
                         headers: &header,
                         bearer_token_env_var: bearer_token_env_var.as_deref(),
+                        raw,
                         command: &command,
                     },
                 )?;
@@ -238,6 +243,7 @@ struct InstallMcpParams<'a> {
     env: &'a [String],
     headers: &'a [String],
     bearer_token_env_var: Option<&'a str>,
+    raw: bool,
     command: &'a [String],
 }
 
@@ -270,21 +276,26 @@ fn install_mcp(cfg: &config::Config, params: InstallMcpParams<'_>) -> Result<()>
         vec![selected_profile]
     };
 
-    let request = mcp::McpInstallRequest {
-        cli_name: params.cli_name,
-        server_name: params.server_name,
-        transport: params.transport,
-        url: params.url,
-        env: params.env,
-        headers: params.headers,
-        bearer_token_env_var: params.bearer_token_env_var,
-        command: params.command,
-    };
-    let _ = mcp::build_install_args(&request)?;
+    if !params.raw {
+        let request = mcp::McpInstallRequest {
+            cli_name: params.cli_name,
+            server_name: params.server_name,
+            transport: params.transport,
+            url: params.url,
+            env: params.env,
+            headers: params.headers,
+            bearer_token_env_var: params.bearer_token_env_var,
+            command: params.command,
+        };
+        let _ = mcp::build_install_args(&request)?;
+    }
 
     println!("{}", format_main_heading("MCP Install"));
     print_detail_line("CLI", &format_cli_label(params.cli_name));
     print_detail_line("Server", params.server_name);
+    if params.raw {
+        print_detail_line("Mode", "raw");
+    }
     print_detail_line(
         "Target",
         if install_all_profiles {
@@ -297,7 +308,7 @@ fn install_mcp(cfg: &config::Config, params: InstallMcpParams<'_>) -> Result<()>
 
     let mut failures = Vec::new();
     for profile_name in &profiles {
-        if params.cli_name == "claude" {
+        if !params.raw && params.cli_name == "claude" {
             maybe_provision_claude_statusline(params.cli_name, profile_name, cfg)?;
         }
 
@@ -308,7 +319,29 @@ fn install_mcp(cfg: &config::Config, params: InstallMcpParams<'_>) -> Result<()>
         );
         print_detail_line("Status", "installing");
 
-        match mcp::install_for_profile(&request, profile_name, cfg) {
+        let result = if params.raw {
+            mcp::raw_install_for_profile(
+                params.cli_name,
+                params.server_name,
+                params.command,
+                profile_name,
+                cfg,
+            )
+        } else {
+            let request = mcp::McpInstallRequest {
+                cli_name: params.cli_name,
+                server_name: params.server_name,
+                transport: params.transport,
+                url: params.url,
+                env: params.env,
+                headers: params.headers,
+                bearer_token_env_var: params.bearer_token_env_var,
+                command: params.command,
+            };
+            mcp::install_for_profile(&request, profile_name, cfg)
+        };
+
+        match result {
             Ok(()) => print_detail_line("Result", "installed"),
             Err(err) => {
                 print_detail_line("Result", "failed");
@@ -341,6 +374,54 @@ fn should_install_for_all_profiles(
         "Install this MCP for all profiles instead of only '{}'? ",
         selected_profile
     ))
+}
+
+fn ensure_exec_profile_exists(profile_name: &str, cfg: &config::Config) -> Result<bool> {
+    if profile_exists(profile_name)? {
+        return Ok(true);
+    }
+
+    let existing_profiles = list_profiles()?;
+
+    println!("Profile '{}' does not exist.", profile_name);
+
+    if existing_profiles.is_empty() {
+        println!();
+        println!("No profiles exist yet.");
+    } else {
+        println!();
+        println!("Existing profiles:");
+        for name in &existing_profiles {
+            if name == &cfg.general.default_profile {
+                println!("- {} (default)", name);
+            } else {
+                println!("- {}", name);
+            }
+        }
+    }
+
+    println!();
+    if confirm("Create it now?")? {
+        create_profile(profile_name, cfg)?;
+        return Ok(true);
+    }
+
+    eprintln!();
+    if existing_profiles.is_empty() {
+        eprintln!("Profile '{}' was not created.", profile_name);
+        eprintln!(
+            "Run `cloak profile create {}` when you want to use it.",
+            profile_name
+        );
+        return Ok(false);
+    }
+
+    eprintln!("Profile '{}' was not created.", profile_name);
+    eprintln!(
+        "Use one of the existing profiles: {}",
+        existing_profiles.join(", ")
+    );
+    Ok(false)
 }
 
 fn show_profile_list(names: &[String], default_profile: &str) {
