@@ -241,6 +241,9 @@ cloak exec codex --profile work -- --model gpt-5.4
 Passe `--profile <nome>` antes dos argumentos repassados para a CLI. Use `--` se quiser
 encaminhar uma flag como `--profile` para a propria CLI alvo.
 
+Se o perfil explicito nao existir, o `cloak` mostra os perfis ja disponiveis e pergunta se deve
+criar o novo. Se a resposta for `nao`, ele encerra sem executar a CLI alvo.
+
 Exemplo visual da execucao com perfil explicito:
 
 ![Demonstração do cloak executando o Claude em perfis isolados](../../sources/images/cloak_claude.jpg)
