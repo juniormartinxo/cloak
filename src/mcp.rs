@@ -43,6 +43,42 @@ pub fn install_for_profile(
     ))
 }
 
+pub fn raw_install_for_profile(
+    cli_name: &str,
+    server_name: &str,
+    command: &[String],
+    profile: &str,
+    config: &Config,
+) -> Result<()> {
+    if command.is_empty() {
+        return Err(eyre!("raw MCP installs require a command after `--`"));
+    }
+
+    let mut cmd =
+        exec::prepare_raw_command_with_profile_env(cli_name, profile, &command[0], config)?;
+    cmd.args(&command[1..]);
+
+    let status = cmd.status().map_err(|err| {
+        eyre!(
+            "failed running raw MCP install '{}' for profile '{}': {}",
+            server_name,
+            profile,
+            err
+        )
+    })?;
+
+    if status.success() {
+        return Ok(());
+    }
+
+    Err(eyre!(
+        "raw MCP install '{}' failed for CLI '{}' in profile '{}'",
+        server_name,
+        cli_name,
+        profile
+    ))
+}
+
 pub fn build_install_args(request: &McpInstallRequest<'_>) -> Result<Vec<String>> {
     validate_request(request)?;
 
