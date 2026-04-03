@@ -241,6 +241,10 @@ cloak exec codex --profile work -- --model gpt-5.4
 Pass `--profile <name>` before forwarded CLI args. Use `--` to forward a flag like `--profile`
 to the target CLI itself.
 
+If the explicit profile does not exist, `cloak` shows the existing profiles and asks whether it
+should create the requested one. If you answer `no`, it exits cleanly without running the target
+CLI.
+
 Visual example of execution with an explicit profile:
 
 ![Demonstration of cloak running Claude with isolated profiles](../sources/images/cloak_claude.jpg)
