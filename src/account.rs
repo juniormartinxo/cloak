@@ -345,6 +345,7 @@ fn latest_codex_rate_limit_snapshot(session_root: &Path) -> Result<Option<CodexR
     session_files.sort();
 
     let mut latest: Option<CodexRateLimitSnapshot> = None;
+    let mut latest_with_windows: Option<CodexRateLimitSnapshot> = None;
 
     for session_file in session_files {
         let file = fs::File::open(&session_file)
@@ -363,12 +364,21 @@ fn latest_codex_rate_limit_snapshot(session_root: &Path) -> Result<Option<CodexR
                 .as_ref()
                 .is_none_or(|current| snapshot.observed_at > current.observed_at);
             if should_replace {
-                latest = Some(snapshot);
+                latest = Some(snapshot.clone());
+            }
+
+            if !snapshot.windows.is_empty() {
+                let should_replace_with_windows = latest_with_windows
+                    .as_ref()
+                    .is_none_or(|current| snapshot.observed_at > current.observed_at);
+                if should_replace_with_windows {
+                    latest_with_windows = Some(snapshot);
+                }
             }
         }
     }
 
-    Ok(latest)
+    Ok(latest_with_windows.or(latest))
 }
 
 fn collect_session_jsonl_files(root: &Path) -> Result<Vec<PathBuf>> {
@@ -891,6 +901,89 @@ mod tests {
                     resets_at: Some(1775223377),
                     opaque: false,
                 }),
+            }))
+        );
+    }
+
+    #[test]
+    fn test_inspect_codex_limits_prefers_latest_snapshot_with_windows() {
+        let tmp = tempdir().expect("tempdir");
+        let cli_dir = tmp.path();
+        let session_dir = cli_dir.join("sessions/2026/04/02");
+        fs::create_dir_all(&session_dir).expect("create sessions dir");
+        fs::write(cli_dir.join("auth.json"), r#"{"auth_mode":"chatgpt"}"#).expect("write auth");
+
+        let with_windows = json!({
+            "timestamp": "2026-04-02T19:08:00.681Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "rate_limits": {
+                    "limit_id": "codex",
+                    "plan_type": "team",
+                    "primary": {
+                        "used_percent": 29.0,
+                        "window_minutes": 300,
+                        "resets_at": 1775170610i64
+                    },
+                    "secondary": {
+                        "used_percent": 4.0,
+                        "window_minutes": 10080,
+                        "resets_at": 1775757410i64
+                    },
+                    "credits": null
+                }
+            }
+        });
+
+        let newer_without_windows = json!({
+            "timestamp": "2026-04-02T20:02:23.939Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "rate_limits": {
+                    "limit_id": "premium",
+                    "plan_type": "team",
+                    "primary": null,
+                    "secondary": null,
+                    "credits": {
+                        "has_credits": false,
+                        "unlimited": false,
+                        "balance": null
+                    }
+                }
+            }
+        });
+
+        fs::write(
+            session_dir.join("rollout-a.jsonl"),
+            format!("{}\n{}\n", with_windows, newer_without_windows),
+        )
+        .expect("write session");
+
+        let status = inspect_codex_limits(cli_dir).expect("inspect");
+        assert_eq!(
+            status,
+            CodexRateLimitStatus::Available(Box::new(CodexRateLimitSnapshot {
+                observed_at: "2026-04-02T19:08:00.681Z".to_string(),
+                plan_type: Some("team".to_string()),
+                limit_id: Some("codex".to_string()),
+                limit_name: None,
+                windows: vec![
+                    CodexRateLimitWindow {
+                        label: "primary",
+                        window_minutes: 300,
+                        used_percent: 29.0,
+                        resets_at: 1775170610,
+                    },
+                    CodexRateLimitWindow {
+                        label: "secondary",
+                        window_minutes: 10080,
+                        used_percent: 4.0,
+                        resets_at: 1775757410,
+                    },
+                ],
+                credits: None,
             }))
         );
     }
