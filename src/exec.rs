@@ -52,6 +52,9 @@ pub fn prepare_exec_command(
 ) -> Result<Command> {
     let (mut cmd, binary, profile_dir, cli_cfg) =
         prepare_cli_command_with_context(cli_name, profile, config)?;
+    let permissions = config::permissions_for_agent(config, cli_name);
+    enforce_command_permissions(cli_name, args, &permissions)?;
+
     let template_context = TemplateContext {
         cli_name,
         profile,
@@ -123,6 +126,140 @@ fn prepare_cli_command_with_context(
     }
 
     Ok((cmd, binary, profile_dir, cli_cfg))
+}
+
+fn enforce_command_permissions(
+    cli_name: &str,
+    args: &[String],
+    permissions: &crate::config::AgentPermissions,
+) -> Result<()> {
+    let Some(command) = forwarded_command_token(args)? else {
+        return Ok(());
+    };
+    let command = command.as_str();
+
+    if permissions
+        .deny_commands
+        .iter()
+        .any(|blocked| blocked.eq_ignore_ascii_case(command))
+    {
+        return Err(eyre!(
+            "command '{command}' is denied for agent '{cli_name}'"
+        ));
+    }
+
+    if !permissions.allow_shell && command_is_shell(command) {
+        return Err(eyre!("shell access is disabled for agent '{cli_name}'"));
+    }
+
+    if !permissions.allow_file_write && command_is_file_write(command) {
+        return Err(eyre!(
+            "file-write operations are disabled for agent '{cli_name}' (command '{command}')"
+        ));
+    }
+
+    if !permissions.allow_network && command_is_network(command) {
+        return Err(eyre!(
+            "network access is disabled for agent '{cli_name}' (command '{command}')"
+        ));
+    }
+
+    let explicitly_allowed = permissions
+        .allowed_commands
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(command));
+
+    if command_is_dangerous(command) && !explicitly_allowed {
+        return Err(eyre!(
+            "dangerous command '{command}' requires explicit allowlist entry for agent '{cli_name}'"
+        ));
+    }
+
+    if permissions.allowed_commands.is_empty() {
+        return Ok(());
+    }
+
+    if explicitly_allowed {
+        return Ok(());
+    }
+
+    Err(eyre!(
+        "command '{command}' is not permitted for agent '{cli_name}'"
+    ))
+}
+
+fn command_is_shell(command: &str) -> bool {
+    const SHELL_COMMANDS: [&str; 9] = [
+        "sh",
+        "bash",
+        "zsh",
+        "fish",
+        "pwsh",
+        "powershell",
+        "cmd",
+        "tcsh",
+        "shell",
+    ];
+
+    SHELL_COMMANDS
+        .iter()
+        .any(|forbidden| forbidden.eq_ignore_ascii_case(command))
+}
+
+fn command_is_file_write(command: &str) -> bool {
+    const FILE_WRITE_COMMANDS: &[&str] = &[
+        "cp",
+        "mv",
+        "rm",
+        "rmdir",
+        "mkdir",
+        "touch",
+        "ln",
+        "chmod",
+        "chown",
+        "chgrp",
+        "truncate",
+        "tee",
+        "install",
+        "apply_patch",
+        "patch",
+        "dd",
+    ];
+
+    FILE_WRITE_COMMANDS
+        .iter()
+        .any(|blocked| blocked.eq_ignore_ascii_case(command))
+}
+
+fn command_is_network(command: &str) -> bool {
+    const NETWORK_COMMANDS: &[&str] = &[
+        "curl", "wget", "ssh", "scp", "sftp", "nc", "ncat", "git", "npm", "pnpm", "yarn", "pip",
+        "python", "python3", "node", "deno", "bun", "go", "ruby", "rustc", "curl.exe", "nc.exe",
+    ];
+
+    NETWORK_COMMANDS
+        .iter()
+        .any(|blocked| blocked.eq_ignore_ascii_case(command))
+}
+
+fn command_is_dangerous(command: &str) -> bool {
+    const DANGEROUS_COMMANDS: &[&str] = &[
+        "rm", "rmdir", "mv", "dd", "truncate", "chmod", "chown", "chgrp",
+    ];
+
+    DANGEROUS_COMMANDS
+        .iter()
+        .any(|blocked| blocked.eq_ignore_ascii_case(command))
+}
+
+fn forwarded_command_token(args: &[String]) -> Result<Option<String>> {
+    for arg in args {
+        if !arg.starts_with('-') {
+            return Ok(Some(arg.to_ascii_lowercase()));
+        }
+    }
+
+    Ok(None)
 }
 
 fn resolve_effective_launch(
@@ -275,12 +412,13 @@ fn _is_profile_dir_empty(path: &std::path::Path) -> Result<bool> {
 mod tests {
     use std::{collections::HashMap, path::Path};
 
-    use crate::config::{CliConfig, Config, GeneralConfig};
+    use crate::config::{AgentPermissions, CliConfig, Config, GeneralConfig};
 
     use super::{
-        is_cursor_wsl_wrapper, is_interactive_terminal, render_template, resolve_effective_launch,
-        resolve_forwarded_args, resolve_remote_agent_folder, should_launch_detached,
-        TemplateContext,
+        command_is_dangerous, command_is_file_write, command_is_network, command_is_shell,
+        enforce_command_permissions, is_cursor_wsl_wrapper, is_interactive_terminal,
+        render_template, resolve_effective_launch, resolve_forwarded_args,
+        resolve_remote_agent_folder, should_launch_detached, TemplateContext,
     };
 
     #[test]
@@ -433,6 +571,7 @@ mod tests {
                     launch_args: vec![],
                 },
             )]),
+            agents: HashMap::new(),
         };
 
         let err = super::prepare_cli_command("cursor", "work", &cfg).expect_err("must fail");
@@ -441,5 +580,124 @@ mod tests {
                 .contains("profile management for CLI 'cursor' is temporarily disabled"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn enforce_command_permissions_rejects_shell_when_disabled() {
+        let permissions = AgentPermissions {
+            allow_shell: false,
+            allow_file_write: true,
+            allow_network: true,
+            allowed_commands: Vec::new(),
+            deny_commands: Vec::new(),
+        };
+
+        let err = enforce_command_permissions("codex", &["bash".to_string()], &permissions)
+            .expect_err("shell command should be blocked");
+        assert!(err.to_string().contains("shell access is disabled"));
+    }
+
+    #[test]
+    fn enforce_command_permissions_allows_shell_when_enabled() {
+        let permissions = AgentPermissions {
+            allow_shell: true,
+            allow_file_write: true,
+            allow_network: true,
+            allowed_commands: Vec::new(),
+            deny_commands: Vec::new(),
+        };
+
+        let result = enforce_command_permissions("codex", &["bash".to_string()], &permissions);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn enforce_command_permissions_rejects_file_write_when_disabled() {
+        let permissions = AgentPermissions {
+            allow_shell: true,
+            allow_file_write: false,
+            allow_network: true,
+            allowed_commands: Vec::new(),
+            deny_commands: Vec::new(),
+        };
+
+        let err = enforce_command_permissions("codex", &["rm".to_string()], &permissions)
+            .expect_err("file write command should be blocked");
+        assert!(err
+            .to_string()
+            .contains("file-write operations are disabled for agent"));
+    }
+
+    #[test]
+    fn enforce_command_permissions_rejects_network_when_disabled() {
+        let permissions = AgentPermissions {
+            allow_shell: true,
+            allow_file_write: true,
+            allow_network: false,
+            allowed_commands: Vec::new(),
+            deny_commands: Vec::new(),
+        };
+
+        let err = enforce_command_permissions("codex", &["curl".to_string()], &permissions)
+            .expect_err("network command should be blocked");
+        assert!(err
+            .to_string()
+            .contains("network access is disabled for agent"));
+    }
+
+    #[test]
+    fn enforce_command_permissions_blocks_dangerous_commands_by_default() {
+        let permissions = AgentPermissions {
+            allow_shell: true,
+            allow_file_write: true,
+            allow_network: true,
+            allowed_commands: Vec::new(),
+            deny_commands: Vec::new(),
+        };
+
+        let err = enforce_command_permissions("codex", &["rm".to_string()], &permissions)
+            .expect_err("dangerous command should require explicit allowlist");
+        assert!(err
+            .to_string()
+            .contains("requires explicit allowlist entry"));
+    }
+
+    #[test]
+    fn enforce_command_permissions_allows_dangerous_command_when_explicitly_allowlisted() {
+        let permissions = AgentPermissions {
+            allow_shell: true,
+            allow_file_write: true,
+            allow_network: true,
+            allowed_commands: vec!["rm".to_string()],
+            deny_commands: Vec::new(),
+        };
+
+        let result = enforce_command_permissions("codex", &["rm".to_string()], &permissions);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn classify_shell_commands() {
+        assert!(command_is_shell("bash"));
+        assert!(!command_is_shell("ask"));
+    }
+
+    #[test]
+    fn classify_file_write_commands() {
+        assert!(command_is_file_write("rm"));
+        assert!(!command_is_file_write("ask"));
+    }
+
+    #[test]
+    fn classify_network_commands() {
+        assert!(command_is_network("curl"));
+        assert!(!command_is_network("ask"));
+    }
+
+    #[test]
+    fn classify_dangerous_commands() {
+        assert!(command_is_dangerous("rm"));
+        assert!(command_is_dangerous("mv"));
+        assert!(!command_is_dangerous("cp"));
     }
 }
