@@ -518,12 +518,16 @@ fn run_permission_questionnaire(
         "{}",
         format_main_heading(&format!("Permissoes para '{agent}'"))
     );
-    print_detail_line("Politica atual", "questionario interativo");
+    print_detail_line("Politica atual", "questionario interativo guiado");
+    print_detail_line(
+        "Observacao",
+        "Comandos perigosos continuam bloqueados por padrao e exigem allowlist manual.",
+    );
     println!();
 
     let updated = ask_permissions(&agent, &current)?;
     config::save_agent_permissions(&loaded.path, &agent, &updated)?;
-    print_agent_permissions(&agent, &updated);
+    print_agent_permissions(&agent, &updated, &loaded.path)?;
     Ok(())
 }
 
@@ -589,36 +593,64 @@ fn ask_permissions(
     current: &config::AgentPermissions,
 ) -> Result<config::AgentPermissions> {
     println!("{}", format_section_title(&format!("Agente: {}", agent)));
+    println!("Responda ao questionario abaixo.");
+    println!("Use 's' para sim, 'n' para nao e Enter para manter o valor atual.");
+    println!();
 
     let allow_shell = prompt_bool(
+        1,
+        6,
         "Permitir acesso ao shell",
         "Controla a execucao de comandos de shell como bash, sh, zsh e similares.",
         current.allow_shell,
     )?;
     let allow_file_write = prompt_bool(
+        2,
+        6,
         "Permitir operacoes de escrita em arquivos",
         "Controla comandos que criam, alteram ou removem arquivos e diretorios, como cp, mkdir e install. Comandos perigosos como rm, mv, chmod e dd continuam bloqueados por padrao e exigem liberacao manual na allowlist.",
         current.allow_file_write,
     )?;
     let allow_network = prompt_bool(
+        3,
+        6,
         "Permitir acesso a rede",
         "Controla comandos que podem acessar recursos externos, como curl, wget, git, npm, pnpm, node e python.",
         current.allow_network,
     )?;
+    let include_dangerous_in_deny = prompt_bool(
+        4,
+        6,
+        "Adicionar comandos perigosos em deny_commands",
+        "Se ativado, rm, rmdir, mv, dd, truncate, chmod, chown e chgrp serao adicionados explicitamente em deny_commands no TOML salvo.",
+        deny_commands_contain_all_dangerous(current),
+    )?;
 
     let allowed_commands = prompt_command_list(
+        5,
+        6,
         "Comandos de topo explicitamente permitidos",
-        "Informe uma lista separada por virgula. Comandos perigosos como rm, mv, chmod e dd so executam se forem adicionados aqui manualmente, mesmo quando a permissao geral estiver ligada.",
+        "Informe uma lista separada por virgula. Comandos perigosos so executam se forem adicionados aqui manualmente e nao estiverem bloqueados em deny_commands.",
         &current.allowed_commands,
     )?;
+    let deny_current = if include_dangerous_in_deny {
+        merge_command_lists(current.deny_commands.clone(), dangerous_command_names())
+    } else {
+        current.deny_commands.clone()
+    };
     let deny_commands = prompt_command_list(
+        6,
+        6,
         "Comandos de topo explicitamente bloqueados",
         "Informe uma lista separada por virgula para negar comandos especificos, mesmo quando outras permissoes estiverem liberadas.",
-        &current.deny_commands,
+        &deny_current,
     )?;
 
     let allowed_commands = normalize_command_list(allowed_commands)?;
-    let deny_commands = normalize_command_list(deny_commands)?;
+    let mut deny_commands = normalize_command_list(deny_commands)?;
+    if include_dangerous_in_deny {
+        deny_commands = merge_command_lists(deny_commands, dangerous_command_names());
+    }
 
     let overlapping = overlap(&allowed_commands, &deny_commands);
     if !overlapping.is_empty() {
@@ -637,11 +669,18 @@ fn ask_permissions(
     })
 }
 
-fn prompt_bool(question: &str, description: &str, default: bool) -> Result<bool> {
+fn prompt_bool(
+    step: usize,
+    total: usize,
+    question: &str,
+    description: &str,
+    default: bool,
+) -> Result<bool> {
     let default_suffix = if default { "[S/n]" } else { "[s/N]" };
-    println!("{question}");
-    println!("{description}");
-    print!("{question} {default_suffix}: ");
+    println!("[{step}/{total}] {question}");
+    println!("  {description}");
+    println!("  Atual: {}", bool_status_label(default));
+    print!("  Resposta {default_suffix}: ");
     io::stdout().flush()?;
 
     let mut input = String::new();
@@ -657,6 +696,8 @@ fn prompt_bool(question: &str, description: &str, default: bool) -> Result<bool>
 }
 
 fn prompt_command_list(
+    step: usize,
+    total: usize,
     question: &str,
     description: &str,
     current: &[String],
@@ -666,11 +707,11 @@ fn prompt_command_list(
     } else {
         current.join(", ")
     };
-    println!("{question}");
-    println!("{description}");
-    println!("Atual: {current_label}");
-    println!("Enter vazio mantem o valor atual. '-' limpa a lista.");
-    print!("> ");
+    println!("[{step}/{total}] {question}");
+    println!("  {description}");
+    println!("  Atual: {current_label}");
+    println!("  Enter vazio mantem o valor atual. '-' limpa a lista.");
+    print!("  Lista: ");
     io::stdout().flush()?;
 
     let mut input = String::new();
@@ -716,30 +757,95 @@ fn overlap(a: &[String], b: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn print_agent_permissions(agent: &str, permissions: &config::AgentPermissions) {
+fn dangerous_command_names() -> Vec<String> {
+    vec![
+        "rm".to_string(),
+        "rmdir".to_string(),
+        "mv".to_string(),
+        "dd".to_string(),
+        "truncate".to_string(),
+        "chmod".to_string(),
+        "chown".to_string(),
+        "chgrp".to_string(),
+    ]
+}
+
+fn merge_command_lists(mut base: Vec<String>, extras: Vec<String>) -> Vec<String> {
+    for extra in extras {
+        if !base.iter().any(|existing| existing == &extra) {
+            base.push(extra);
+        }
+    }
+
+    base
+}
+
+fn deny_commands_contain_all_dangerous(current: &config::AgentPermissions) -> bool {
+    dangerous_command_names().iter().all(|command| {
+        current
+            .deny_commands
+            .iter()
+            .any(|existing| existing == command)
+    })
+}
+
+fn print_agent_permissions(
+    agent: &str,
+    permissions: &config::AgentPermissions,
+    config_path: &Path,
+) -> Result<()> {
     println!();
     println!("{}", format_section_title("Permissoes salvas"));
     print_detail_line("Agente", agent);
-    print_detail_line("allow_shell", &permissions.allow_shell.to_string());
+    print_detail_line("Shell", bool_status_label(permissions.allow_shell));
     print_detail_line(
-        "allow_file_write",
-        &permissions.allow_file_write.to_string(),
+        "Escrita em arquivos",
+        bool_status_label(permissions.allow_file_write),
     );
-    print_detail_line("allow_network", &permissions.allow_network.to_string());
+    print_detail_line("Rede", bool_status_label(permissions.allow_network));
 
     if permissions.allowed_commands.is_empty() {
-        print_detail_line("allowed_commands", "<todos>");
+        print_detail_line("Comandos permitidos", "<todos os nao perigosos>");
     } else {
-        print_detail_line("allowed_commands", &permissions.allowed_commands.join(", "));
+        print_detail_line(
+            "Comandos permitidos",
+            &permissions.allowed_commands.join(", "),
+        );
     }
 
     if permissions.deny_commands.is_empty() {
-        print_detail_line("deny_commands", "<nenhum>");
+        print_detail_line("Comandos bloqueados", "<nenhum>");
     } else {
-        print_detail_line("deny_commands", &permissions.deny_commands.join(", "));
+        print_detail_line("Comandos bloqueados", &permissions.deny_commands.join(", "));
     }
 
+    print_detail_line("Comandos perigosos", dangerous_commands_summary());
     println!("Salvo na configuracao.");
+    println!();
+    println!("{}", format_section_title("config.toml salvo"));
+    print_detail_line("Arquivo", &display_path(config_path));
+    println!();
+
+    let raw = fs::read_to_string(config_path)
+        .wrap_err_with(|| format!("falha ao ler {}", config_path.display()))?;
+    print!("{raw}");
+    if !raw.ends_with('\n') {
+        println!();
+    }
+
+    Ok(())
+}
+
+fn bool_status_label(value: bool) -> &'static str {
+    if value {
+        "permitido"
+    } else {
+        "bloqueado"
+    }
+}
+
+fn dangerous_commands_summary() -> &'static str {
+    "rm, rmdir, mv, dd, truncate, chmod, chown e chgrp exigem allowlist manual"
 }
 
 fn delete_profile(name: &str, yes: bool, loaded: &config::LoadedConfig) -> Result<()> {
