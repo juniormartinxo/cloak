@@ -65,6 +65,12 @@ pub enum Commands {
 
     /// Generate shell completions
     Completions { shell: Shell },
+
+    /// Configure per-agent permissions
+    Permission {
+        #[command(subcommand)]
+        command: PermissionCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -137,6 +143,16 @@ pub enum McpCommands {
         /// Stdio command forwarded after `--`
         #[arg(allow_hyphen_values = true)]
         command: Vec<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PermissionCommands {
+    /// Interactive setup of execution permissions for one agent
+    Ask {
+        /// Agent name (for example: codex)
+        #[arg(long)]
+        agent: Option<String>,
     },
 }
 
