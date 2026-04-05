@@ -29,7 +29,7 @@ use crate::{
         AccountStatus, ClaudeRateLimitSnapshot, ClaudeRateLimitStatus, CodexCreditsSummary,
         CodexRateLimitSnapshot, CodexRateLimitStatus,
     },
-    cli::{Cli, Commands, McpCommands, McpTransport, ProfileCommands},
+    cli::{Cli, Commands, McpCommands, McpTransport, PermissionCommands, ProfileCommands},
     profile::{ProfileSource, ResolvedProfile},
 };
 
@@ -192,6 +192,11 @@ fn main() -> Result<()> {
                         show_profile_limits(p, &loaded.config, utc.unwrap_or(0))?;
                     }
                 }
+            }
+        },
+        Commands::Permission { command } => match command {
+            PermissionCommands::Ask { agent } => {
+                run_permission_questionnaire(agent, &loaded)?;
             }
         },
         Commands::Doctor => {
@@ -500,6 +505,241 @@ fn create_profile(name: &str, cfg: &config::Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn run_permission_questionnaire(
+    agent_arg: Option<String>,
+    loaded: &config::LoadedConfig,
+) -> Result<()> {
+    let agent = resolve_permission_agent(agent_arg, &loaded.config)?;
+    let current = config::permissions_for_agent(&loaded.config, &agent);
+
+    println!(
+        "{}",
+        format_main_heading(&format!("Permissoes para '{agent}'"))
+    );
+    print_detail_line("Politica atual", "questionario interativo");
+    println!();
+
+    let updated = ask_permissions(&agent, &current)?;
+    config::save_agent_permissions(&loaded.path, &agent, &updated)?;
+    print_agent_permissions(&agent, &updated);
+    Ok(())
+}
+
+fn resolve_permission_agent(
+    explicit_agent: Option<String>,
+    cfg: &config::Config,
+) -> Result<String> {
+    if let Some(agent) = explicit_agent {
+        paths::validate_cli_name(&agent)?;
+        return Ok(agent);
+    }
+
+    let candidates = available_agents(cfg);
+    if candidates.is_empty() {
+        return Err(eyre!(
+            "nenhum agente conhecido foi configurado ainda. use --agent <nome> para configurar um"
+        ));
+    }
+
+    if candidates.len() == 1 {
+        return Ok(candidates[0].clone());
+    }
+
+    if !is_interactive_terminal() {
+        return Err(eyre!("--agent e obrigatorio em modo nao interativo"));
+    }
+
+    println!("Escolha um agente:");
+    for (index, name) in candidates.iter().enumerate() {
+        println!("  [{}] {}", index + 1, name);
+    }
+
+    print!("Digite o numero (1-{}): ", candidates.len());
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let choice = input
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| eyre!("selecao invalida"))?;
+
+    if choice == 0 || choice > candidates.len() {
+        return Err(eyre!("selecao fora do intervalo"));
+    }
+
+    Ok(candidates[choice - 1].clone())
+}
+
+fn available_agents(cfg: &config::Config) -> Vec<String> {
+    let mut agents: Vec<String> = cfg.agents.keys().cloned().collect();
+    if !agents.iter().any(|agent| agent == "codex") {
+        agents.push("codex".to_string());
+    }
+
+    agents.sort();
+    agents.dedup();
+    agents
+}
+
+fn ask_permissions(
+    agent: &str,
+    current: &config::AgentPermissions,
+) -> Result<config::AgentPermissions> {
+    println!("{}", format_section_title(&format!("Agente: {}", agent)));
+
+    let allow_shell = prompt_bool(
+        "Permitir acesso ao shell",
+        "Controla a execucao de comandos de shell como bash, sh, zsh e similares.",
+        current.allow_shell,
+    )?;
+    let allow_file_write = prompt_bool(
+        "Permitir operacoes de escrita em arquivos",
+        "Controla comandos que criam, alteram ou removem arquivos e diretorios, como cp, mkdir e install. Comandos perigosos como rm, mv, chmod e dd continuam bloqueados por padrao e exigem liberacao manual na allowlist.",
+        current.allow_file_write,
+    )?;
+    let allow_network = prompt_bool(
+        "Permitir acesso a rede",
+        "Controla comandos que podem acessar recursos externos, como curl, wget, git, npm, pnpm, node e python.",
+        current.allow_network,
+    )?;
+
+    let allowed_commands = prompt_command_list(
+        "Comandos de topo explicitamente permitidos",
+        "Informe uma lista separada por virgula. Comandos perigosos como rm, mv, chmod e dd so executam se forem adicionados aqui manualmente, mesmo quando a permissao geral estiver ligada.",
+        &current.allowed_commands,
+    )?;
+    let deny_commands = prompt_command_list(
+        "Comandos de topo explicitamente bloqueados",
+        "Informe uma lista separada por virgula para negar comandos especificos, mesmo quando outras permissoes estiverem liberadas.",
+        &current.deny_commands,
+    )?;
+
+    let allowed_commands = normalize_command_list(allowed_commands)?;
+    let deny_commands = normalize_command_list(deny_commands)?;
+
+    let overlapping = overlap(&allowed_commands, &deny_commands);
+    if !overlapping.is_empty() {
+        return Err(eyre!(
+            "ha comandos repetidos entre permitidos e bloqueados: {}",
+            overlapping.join(", ")
+        ));
+    }
+
+    Ok(config::AgentPermissions {
+        allow_shell,
+        allow_file_write,
+        allow_network,
+        allowed_commands,
+        deny_commands,
+    })
+}
+
+fn prompt_bool(question: &str, description: &str, default: bool) -> Result<bool> {
+    let default_suffix = if default { "[S/n]" } else { "[s/N]" };
+    println!("{question}");
+    println!("{description}");
+    print!("{question} {default_suffix}: ");
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let answer = input.trim().to_ascii_lowercase();
+
+    match answer.as_str() {
+        "" => Ok(default),
+        "s" | "sim" | "y" | "yes" => Ok(true),
+        "n" | "no" => Ok(false),
+        _ => Err(eyre!("resposta invalida: use s ou n")),
+    }
+}
+
+fn prompt_command_list(
+    question: &str,
+    description: &str,
+    current: &[String],
+) -> Result<Vec<String>> {
+    let current_label = if current.is_empty() {
+        "<nenhum>".to_string()
+    } else {
+        current.join(", ")
+    };
+    println!("{question}");
+    println!("{description}");
+    println!("Atual: {current_label}");
+    println!("Enter vazio mantem o valor atual. '-' limpa a lista.");
+    print!("> ");
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let trimmed = input.trim();
+
+    if trimmed == "-" {
+        return Ok(Vec::new());
+    }
+
+    if trimmed.is_empty() {
+        return Ok(current.to_vec());
+    }
+
+    let parsed: Vec<String> = trimmed
+        .split(',')
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect();
+
+    Ok(parsed)
+}
+
+fn normalize_command_list(values: Vec<String>) -> Result<Vec<String>> {
+    let mut normalized = Vec::new();
+
+    for value in values {
+        if value.starts_with('-') {
+            return Err(eyre!("o comando nao pode comecar com '-': {value}"));
+        }
+        if !normalized.iter().any(|existing| existing == &value) {
+            normalized.push(value);
+        }
+    }
+
+    Ok(normalized)
+}
+
+fn overlap(a: &[String], b: &[String]) -> Vec<String> {
+    a.iter()
+        .filter(|value| b.iter().any(|other| other == *value))
+        .cloned()
+        .collect()
+}
+
+fn print_agent_permissions(agent: &str, permissions: &config::AgentPermissions) {
+    println!();
+    println!("{}", format_section_title("Permissoes salvas"));
+    print_detail_line("Agente", agent);
+    print_detail_line("allow_shell", &permissions.allow_shell.to_string());
+    print_detail_line(
+        "allow_file_write",
+        &permissions.allow_file_write.to_string(),
+    );
+    print_detail_line("allow_network", &permissions.allow_network.to_string());
+
+    if permissions.allowed_commands.is_empty() {
+        print_detail_line("allowed_commands", "<todos>");
+    } else {
+        print_detail_line("allowed_commands", &permissions.allowed_commands.join(", "));
+    }
+
+    if permissions.deny_commands.is_empty() {
+        print_detail_line("deny_commands", "<nenhum>");
+    } else {
+        print_detail_line("deny_commands", &permissions.deny_commands.join(", "));
+    }
+
+    println!("Salvo na configuracao.");
 }
 
 fn delete_profile(name: &str, yes: bool, loaded: &config::LoadedConfig) -> Result<()> {
@@ -1744,6 +1984,7 @@ mod tests {
                 default_profile: "personal".to_string(),
             },
             cli: cli_map,
+            agents: std::collections::HashMap::new(),
         };
 
         let result = provision_default_claude_statusline(&profile_dir, &cfg).expect("provision");
@@ -1791,6 +2032,7 @@ mod tests {
                 default_profile: "personal".to_string(),
             },
             cli: cli_map,
+            agents: std::collections::HashMap::new(),
         };
 
         let result = provision_default_claude_statusline(&profile_dir, &cfg).expect("provision");
@@ -1831,6 +2073,7 @@ mod tests {
                 default_profile: "personal".to_string(),
             },
             cli: cli_map,
+            agents: std::collections::HashMap::new(),
         };
 
         let result = provision_default_claude_statusline(&profile_dir, &cfg).expect("provision");
