@@ -5,26 +5,28 @@ use std::{
 };
 
 use color_eyre::eyre::{eyre, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::paths;
 
 pub const RECOMMENDED_CLI_NAMES: [&str; 3] = ["claude", "codex", "gemini"];
 pub const PROFILE_MANAGED_CLI_NAMES: [&str; 3] = RECOMMENDED_CLI_NAMES;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub general: GeneralConfig,
     #[serde(default)]
     pub cli: HashMap<String, CliConfig>,
+    #[serde(default)]
+    pub agents: HashMap<String, AgentPermissions>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneralConfig {
     pub default_profile: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CliConfig {
     pub binary: String,
     #[serde(default)]
@@ -38,6 +40,40 @@ pub struct CliConfig {
 
     #[serde(default)]
     pub launch_args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentPermissions {
+    #[serde(default = "default_permission_true")]
+    pub allow_shell: bool,
+
+    #[serde(default = "default_permission_true")]
+    pub allow_file_write: bool,
+
+    #[serde(default = "default_permission_true")]
+    pub allow_network: bool,
+
+    #[serde(default)]
+    pub allowed_commands: Vec<String>,
+
+    #[serde(default)]
+    pub deny_commands: Vec<String>,
+}
+
+impl Default for AgentPermissions {
+    fn default() -> Self {
+        Self {
+            allow_shell: true,
+            allow_file_write: true,
+            allow_network: true,
+            allowed_commands: Vec::new(),
+            deny_commands: Vec::new(),
+        }
+    }
+}
+
+fn default_permission_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +115,13 @@ remove_env_vars = ["OPENAI_API_KEY"]
 binary = "gemini"
 config_dir_env = "GEMINI_CLI_HOME"
 remove_env_vars = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+
+[agents.codex]
+allow_shell = true
+allow_file_write = true
+allow_network = true
+allowed_commands = []
+deny_commands = []
 "#;
 
 pub fn load_config_from_path(path: &Path) -> Result<Config> {
@@ -97,6 +140,27 @@ pub fn missing_recommended_cli_names(config: &Config) -> Vec<String> {
     }
 
     missing
+}
+
+pub fn permissions_for_agent(config: &Config, agent: &str) -> AgentPermissions {
+    config.agents.get(agent).cloned().unwrap_or_default()
+}
+
+pub fn save_agent_permissions(
+    config_path: &Path,
+    agent: &str,
+    permissions: &AgentPermissions,
+) -> Result<()> {
+    paths::validate_cli_name(agent)?;
+    let mut config = load_config_from_path(config_path)?;
+    config.agents.insert(agent.to_string(), permissions.clone());
+
+    let raw = toml::to_string_pretty(&config)
+        .wrap_err("failed to serialize config with agent permissions")?;
+    fs::write(config_path, format!("{raw}\n"))
+        .wrap_err_with(|| format!("failed writing config file {}", config_path.display()))?;
+    paths::set_owner_only_file(config_path)?;
+    Ok(())
 }
 
 pub fn is_profile_management_enabled(cli_name: &str) -> bool {
@@ -266,6 +330,12 @@ fn parse_config_str(raw: &str, path: &Path) -> Result<Config> {
         })?;
     }
 
+    for agent in parsed.agents.keys() {
+        paths::validate_cli_name(agent).wrap_err_with(|| {
+            format!("invalid agent entry name '{}' in {}", agent, path.display())
+        })?;
+    }
+
     Ok(parsed)
 }
 
@@ -277,7 +347,8 @@ mod tests {
 
     use super::{
         append_default_cli_blocks, load_config_from_path, missing_recommended_cli_names,
-        parse_config_str, update_default_profile, DEFAULT_CONFIG_TOML,
+        parse_config_str, save_agent_permissions, update_default_profile, AgentPermissions,
+        DEFAULT_CONFIG_TOML,
     };
 
     #[test]
@@ -287,6 +358,60 @@ mod tests {
         assert!(parsed.cli.contains_key("claude"));
         assert!(parsed.cli.contains_key("codex"));
         assert!(parsed.cli.contains_key("gemini"));
+        assert!(parsed.agents.contains_key("codex"));
+        assert!(matches!(
+            parsed.agents.get("codex"),
+            Some(AgentPermissions {
+                allow_shell: true,
+                ..
+            })
+        ));
+        assert!(parsed.agents["codex"].allow_file_write);
+    }
+
+    #[test]
+    fn test_parse_config_rejects_invalid_agent_entry_name() {
+        let raw = r#"
+[general]
+default_profile = "personal"
+
+[cli.claude]
+binary = "claude"
+config_dir_env = "CLAUDE_CONFIG_DIR"
+
+[agents."../../etc"]
+allow_shell = true
+allow_file_write = true
+allow_network = true
+"#;
+
+        let err = parse_config_str(raw, Path::new("config.toml")).expect_err("must fail");
+        assert!(
+            err.to_string().contains("invalid agent entry name"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_save_agent_permissions_preserves_config_and_writes_section() {
+        let tmp = tempdir().expect("tempdir");
+        let config_path = tmp.path().join("config.toml");
+        fs::write(&config_path, DEFAULT_CONFIG_TOML).expect("write config");
+
+        let permissions = AgentPermissions {
+            allow_shell: false,
+            allow_file_write: false,
+            allow_network: true,
+            allowed_commands: vec!["ask".to_string()],
+            deny_commands: vec!["status".to_string()],
+        };
+
+        save_agent_permissions(&config_path, "claude", &permissions).expect("save permissions");
+
+        let content = fs::read_to_string(&config_path).expect("read");
+        assert!(content.contains("[agents.claude]"));
+        assert!(content.contains("allow_shell = false"));
+        assert!(content.contains("allowed_commands = ["));
     }
 
     #[test]
