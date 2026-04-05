@@ -527,6 +527,15 @@ fn run_permission_questionnaire(
 
     let updated = ask_permissions(&agent, &current)?;
     config::save_agent_permissions(&loaded.path, &agent, &updated)?;
+
+    let mut effective_config = loaded.config.clone();
+    effective_config
+        .agents
+        .insert(agent.clone(), updated.clone());
+    if agent == "claude" {
+        sync_claude_permissions_for_existing_profiles(&effective_config)?;
+    }
+
     print_agent_permissions(&agent, &updated, &loaded.path)?;
     Ok(())
 }
@@ -581,6 +590,9 @@ fn available_agents(cfg: &config::Config) -> Vec<String> {
     let mut agents: Vec<String> = cfg.agents.keys().cloned().collect();
     if !agents.iter().any(|agent| agent == "codex") {
         agents.push("codex".to_string());
+    }
+    if cfg.cli.contains_key("claude") && !agents.iter().any(|agent| agent == "claude") {
+        agents.push("claude".to_string());
     }
 
     agents.sort();
@@ -677,10 +689,16 @@ fn prompt_bool(
     default: bool,
 ) -> Result<bool> {
     let default_suffix = if default { "[S/n]" } else { "[s/N]" };
-    println!("[{step}/{total}] {question}");
-    println!("  {description}");
-    println!("  Atual: {}", bool_status_label(default));
-    print!("  Resposta {default_suffix}: ");
+    println!("{}", format_prompt_question(step, total, question));
+    println!("{}", format_prompt_description(description));
+    println!(
+        "{}",
+        format_prompt_meta_line("Atual", &format_permission_value(default))
+    );
+    print!(
+        "{}",
+        format_prompt_input(&format!("Resposta {default_suffix}:"))
+    );
     io::stdout().flush()?;
 
     let mut input = String::new();
@@ -707,11 +725,14 @@ fn prompt_command_list(
     } else {
         current.join(", ")
     };
-    println!("[{step}/{total}] {question}");
-    println!("  {description}");
-    println!("  Atual: {current_label}");
-    println!("  Enter vazio mantem o valor atual. '-' limpa a lista.");
-    print!("  Lista: ");
+    println!("{}", format_prompt_question(step, total, question));
+    println!("{}", format_prompt_description(description));
+    println!("{}", format_prompt_meta_line("Atual", &current_label));
+    println!(
+        "{}",
+        format_prompt_hint("Enter vazio mantem o valor atual. '-' limpa a lista.")
+    );
+    print!("{}", format_prompt_input("Lista:"));
     io::stdout().flush()?;
 
     let mut input = String::new();
@@ -1518,6 +1539,64 @@ fn format_section_title(title: &str) -> String {
     }
 }
 
+fn format_prompt_question(step: usize, total: usize, question: &str) -> String {
+    let label = format!("[{step}/{total}]");
+    if io::stdout().is_terminal() {
+        format!(
+            "\n{} {}",
+            label.bold().cyan(),
+            question.bold().bright_yellow()
+        )
+    } else {
+        format!("\n{label} {question}")
+    }
+}
+
+fn format_prompt_input(label: &str) -> String {
+    if io::stdout().is_terminal() {
+        format!("  {} ", label.black().on_bright_green().bold())
+    } else {
+        format!("  {label} ")
+    }
+}
+
+fn format_prompt_description(description: &str) -> String {
+    if io::stdout().is_terminal() {
+        format!("  {}", description.dimmed())
+    } else {
+        format!("  {description}")
+    }
+}
+
+fn format_prompt_meta_line(label: &str, value: &str) -> String {
+    if io::stdout().is_terminal() {
+        format!("  {} {}", format!("{label}:").bold().blue(), value)
+    } else {
+        format!("  {label}: {value}")
+    }
+}
+
+fn format_prompt_hint(hint: &str) -> String {
+    if io::stdout().is_terminal() {
+        format!("  {}", hint.italic().dimmed())
+    } else {
+        format!("  {hint}")
+    }
+}
+
+fn format_permission_value(allowed: bool) -> String {
+    let label = bool_status_label(allowed);
+    if io::stdout().is_terminal() {
+        if allowed {
+            label.bold().green().to_string()
+        } else {
+            label.bold().red().to_string()
+        }
+    } else {
+        label.to_string()
+    }
+}
+
 fn format_cli_label(cli_name: &str) -> String {
     match cli_name {
         "claude" => "Claude".to_string(),
@@ -1804,6 +1883,11 @@ struct StatuslineProvisionResult {
     settings_path: PathBuf,
 }
 
+struct ClaudePermissionRules {
+    allow: Vec<String>,
+    deny: Vec<String>,
+}
+
 fn provision_default_claude_statusline(
     profile_dir: &Path,
     cfg: &config::Config,
@@ -1875,13 +1959,19 @@ fn provision_default_claude_statusline(
                 "command": default_claude_statusline_command(&script_path),
             }),
         );
+        settings_updated = true;
+    }
 
+    if apply_claude_permission_settings(settings_obj, cfg)? {
+        settings_updated = true;
+    }
+
+    if settings_updated {
         let serialized = serde_json::to_string_pretty(&settings)
             .wrap_err("failed serializing Claude settings")?;
         fs::write(&settings_path, format!("{serialized}\n"))
             .wrap_err_with(|| format!("failed writing {}", settings_path.display()))?;
         paths::set_owner_only_file(&settings_path)?;
-        settings_updated = true;
     }
 
     Ok(StatuslineProvisionResult {
@@ -1891,6 +1981,97 @@ fn provision_default_claude_statusline(
         script_path,
         settings_path,
     })
+}
+
+fn apply_claude_permission_settings(
+    settings_obj: &mut serde_json::Map<String, Value>,
+    cfg: &config::Config,
+) -> Result<bool> {
+    let Some(permissions) = cfg.agents.get("claude") else {
+        return Ok(false);
+    };
+
+    let generated = build_claude_permission_rules(permissions);
+    let permissions_value = settings_obj
+        .entry("permissions".to_string())
+        .or_insert_with(|| json!({}));
+    let permissions_obj = permissions_value
+        .as_object_mut()
+        .ok_or_else(|| eyre!("Claude settings 'permissions' must contain a JSON object"))?;
+
+    let next_allow = json!(generated.allow);
+    let next_deny = json!(generated.deny);
+    let allow_changed = permissions_obj.get("allow") != Some(&next_allow);
+    let deny_changed = permissions_obj.get("deny") != Some(&next_deny);
+
+    if allow_changed {
+        permissions_obj.insert("allow".to_string(), next_allow);
+    }
+    if deny_changed {
+        permissions_obj.insert("deny".to_string(), next_deny);
+    }
+
+    Ok(allow_changed || deny_changed)
+}
+
+fn build_claude_permission_rules(permissions: &config::AgentPermissions) -> ClaudePermissionRules {
+    let mut allow = Vec::new();
+    let mut deny = Vec::new();
+
+    if permissions.allow_shell {
+        push_unique_rule(&mut allow, "Bash".to_string());
+    } else {
+        push_unique_rule(&mut deny, "Bash".to_string());
+    }
+
+    if permissions.allow_file_write {
+        push_unique_rule(&mut allow, "Edit".to_string());
+    } else {
+        push_unique_rule(&mut deny, "Edit".to_string());
+    }
+
+    if permissions.allow_network {
+        push_unique_rule(&mut allow, "WebFetch".to_string());
+    } else {
+        push_unique_rule(&mut deny, "WebFetch".to_string());
+    }
+
+    for command in &permissions.allowed_commands {
+        for rule in claude_bash_rules_for_command(command) {
+            push_unique_rule(&mut allow, rule);
+        }
+    }
+
+    for command in &permissions.deny_commands {
+        for rule in claude_bash_rules_for_command(command) {
+            push_unique_rule(&mut deny, rule);
+        }
+    }
+
+    ClaudePermissionRules { allow, deny }
+}
+
+fn claude_bash_rules_for_command(command: &str) -> [String; 2] {
+    [format!("Bash({command})"), format!("Bash({command} *)")]
+}
+
+fn push_unique_rule(target: &mut Vec<String>, rule: String) {
+    if !target.iter().any(|existing| existing == &rule) {
+        target.push(rule);
+    }
+}
+
+fn sync_claude_permissions_for_existing_profiles(cfg: &config::Config) -> Result<()> {
+    if !cfg.cli.contains_key("claude") || !cfg.agents.contains_key("claude") {
+        return Ok(());
+    }
+
+    for profile in list_profiles()? {
+        let profile_dir = paths::profile_dir(&profile)?;
+        let _ = provision_default_claude_statusline(&profile_dir, cfg)?;
+    }
+
+    Ok(())
 }
 
 fn default_claude_statusline_script() -> &'static str {
@@ -2054,9 +2235,10 @@ fn set_script_permissions_owner_only(path: &Path) -> Result<()> {
 mod tests {
     use std::fs;
 
+    use serde_json::Value;
     use tempfile::tempdir;
 
-    use crate::config::{CliConfig, Config, GeneralConfig};
+    use crate::config::{AgentPermissions, CliConfig, Config, GeneralConfig};
 
     use super::{
         civil_from_days, expired_usage_rank_hint, expired_usage_snapshot_hint,
@@ -2190,6 +2372,141 @@ mod tests {
             .expect("read statusline script");
         assert!(script.contains("usage-limits.json"));
         assert!(script.contains("# cloak-generated-statusline-v2"));
+    }
+
+    #[test]
+    fn test_provision_writes_claude_permissions_from_agent_config() {
+        let tmp = tempdir().expect("tempdir");
+        let profile_dir = tmp.path().join("work");
+        fs::create_dir_all(profile_dir.join("claude")).expect("create claude dir");
+
+        let mut cli_map = std::collections::HashMap::new();
+        cli_map.insert(
+            "claude".to_string(),
+            CliConfig {
+                binary: "claude".to_string(),
+                config_dir_env: Some("CLAUDE_CONFIG_DIR".to_string()),
+                remove_env_vars: vec![],
+                extra_env: Default::default(),
+                launch_args: vec![],
+            },
+        );
+
+        let mut agents = std::collections::HashMap::new();
+        agents.insert(
+            "claude".to_string(),
+            AgentPermissions {
+                allow_shell: true,
+                allow_file_write: false,
+                allow_network: true,
+                allowed_commands: vec!["npm".to_string()],
+                deny_commands: vec!["rm".to_string()],
+            },
+        );
+
+        let cfg = Config {
+            general: GeneralConfig {
+                default_profile: "personal".to_string(),
+            },
+            cli: cli_map,
+            agents,
+        };
+
+        let result = provision_default_claude_statusline(&profile_dir, &cfg).expect("provision");
+        assert!(result.settings_updated);
+
+        let settings_path = profile_dir.join("claude/settings.json");
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(&settings_path).expect("read settings"))
+                .expect("parse settings");
+
+        let allow = settings["permissions"]["allow"]
+            .as_array()
+            .expect("allow array")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+        let deny = settings["permissions"]["deny"]
+            .as_array()
+            .expect("deny array")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(allow.contains(&"Bash"));
+        assert!(allow.contains(&"WebFetch"));
+        assert!(allow.contains(&"Bash(npm)"));
+        assert!(allow.contains(&"Bash(npm *)"));
+        assert!(deny.contains(&"Edit"));
+        assert!(deny.contains(&"Bash(rm)"));
+        assert!(deny.contains(&"Bash(rm *)"));
+    }
+
+    #[test]
+    fn test_provision_preserves_existing_claude_permission_mode_and_ask_rules() {
+        let tmp = tempdir().expect("tempdir");
+        let profile_dir = tmp.path().join("work");
+        let claude_dir = profile_dir.join("claude");
+        fs::create_dir_all(&claude_dir).expect("create claude dir");
+        fs::write(
+            claude_dir.join("settings.json"),
+            r#"{
+  "permissions": {
+    "ask": ["Bash(git push *)"],
+    "defaultMode": "default"
+  }
+}"#,
+        )
+        .expect("write settings");
+
+        let mut cli_map = std::collections::HashMap::new();
+        cli_map.insert(
+            "claude".to_string(),
+            CliConfig {
+                binary: "claude".to_string(),
+                config_dir_env: Some("CLAUDE_CONFIG_DIR".to_string()),
+                remove_env_vars: vec![],
+                extra_env: Default::default(),
+                launch_args: vec![],
+            },
+        );
+
+        let mut agents = std::collections::HashMap::new();
+        agents.insert(
+            "claude".to_string(),
+            AgentPermissions {
+                allow_shell: false,
+                allow_file_write: true,
+                allow_network: false,
+                allowed_commands: vec![],
+                deny_commands: vec!["rm".to_string()],
+            },
+        );
+
+        let cfg = Config {
+            general: GeneralConfig {
+                default_profile: "personal".to_string(),
+            },
+            cli: cli_map,
+            agents,
+        };
+
+        let result = provision_default_claude_statusline(&profile_dir, &cfg).expect("provision");
+        assert!(result.settings_updated);
+
+        let settings_path = claude_dir.join("settings.json");
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(&settings_path).expect("read settings"))
+                .expect("parse settings");
+
+        assert_eq!(settings["permissions"]["defaultMode"], "default");
+        assert_eq!(
+            settings["permissions"]["ask"][0],
+            Value::String("Bash(git push *)".to_string())
+        );
+        assert_eq!(settings["permissions"]["allow"][0], "Edit");
+        assert_eq!(settings["permissions"]["deny"][0], "Bash");
+        assert_eq!(settings["permissions"]["deny"][1], "WebFetch");
     }
 
     #[test]
