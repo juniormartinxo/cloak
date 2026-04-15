@@ -4,6 +4,7 @@ mod config;
 mod doctor;
 mod exec;
 mod mcp;
+mod mcp_registry;
 mod paths;
 mod profile;
 
@@ -143,6 +144,28 @@ fn main() -> Result<()> {
             exec::exec_cli(&cli, &selected_profile, &[], &loaded.config)?;
         }
         Commands::Mcp(sub) => match sub {
+            McpCommands::Add {
+                name,
+                targets,
+                profile,
+                all_profiles,
+                no_all_profiles,
+                yes,
+                show,
+            } => {
+                run_mcp_add(
+                    &loaded.config,
+                    AddMcpParams {
+                        name: name.as_deref(),
+                        targets: &targets,
+                        profile: profile.as_deref(),
+                        all_profiles,
+                        no_all_profiles,
+                        yes,
+                        show,
+                    },
+                )?;
+            }
             McpCommands::Install {
                 cli,
                 name,
@@ -250,6 +273,345 @@ struct InstallMcpParams<'a> {
     bearer_token_env_var: Option<&'a str>,
     raw: bool,
     command: &'a [String],
+}
+
+struct AddMcpParams<'a> {
+    name: Option<&'a str>,
+    targets: &'a [String],
+    profile: Option<&'a str>,
+    all_profiles: bool,
+    no_all_profiles: bool,
+    yes: bool,
+    show: bool,
+}
+
+fn run_mcp_add(cfg: &config::Config, params: AddMcpParams<'_>) -> Result<()> {
+    let registry = mcp_registry::Registry::load()?;
+
+    let name = match params.name {
+        Some(n) => n,
+        None => {
+            print_registry_catalog(&registry);
+            return Ok(());
+        }
+    };
+
+    let entry = registry.get(name).ok_or_else(|| {
+        let available: Vec<&str> = registry.names();
+        eyre!(
+            "MCP '{}' is not in the registry. Available: {}",
+            name,
+            available.join(", ")
+        )
+    })?;
+
+    let targets = resolve_add_targets(entry, params.targets, params.yes)?;
+
+    let mut resolved_per_cli: Vec<(String, mcp_registry::ResolvedEntry)> =
+        Vec::with_capacity(targets.len());
+    for cli_name in &targets {
+        let resolved = entry.resolve(cli_name)?;
+        resolved_per_cli.push((cli_name.clone(), resolved));
+    }
+
+    if params.show {
+        print_registry_show(entry, &resolved_per_cli);
+        return Ok(());
+    }
+
+    let profiles = resolve_add_profile_scope(
+        cfg,
+        params.profile,
+        params.all_profiles,
+        params.no_all_profiles,
+        params.yes,
+    )?;
+
+    println!("{}", format_main_heading("MCP Add"));
+    print_detail_line("Name", &entry.name);
+    print_detail_line("Description", &entry.description);
+    if let Some(notes) = &entry.notes {
+        print_detail_line("Notes", notes);
+    }
+    print_detail_line("Transport", transport_label(entry.transport));
+    print_detail_line("CLIs", &targets.join(", "));
+    let profile_scope_label = if params.profile.is_some() {
+        format!("'{}'", profiles[0])
+    } else if params.no_all_profiles {
+        format!("current ('{}')", profiles[0])
+    } else {
+        format!("all profiles ({})", profiles.len())
+    };
+    print_detail_line("Profiles", &profile_scope_label);
+
+    let mut failures: Vec<String> = Vec::new();
+    for (cli_name, resolved) in &resolved_per_cli {
+        println!();
+        println!(
+            "{}",
+            format_section_title(&format!("CLI {}", format_cli_label(cli_name)))
+        );
+
+        for profile_name in &profiles {
+            if !resolved.raw && cli_name == "claude" {
+                maybe_provision_claude_statusline(cli_name, profile_name, cfg)?;
+            }
+
+            println!();
+            println!(
+                "{}",
+                format_section_title(&format!("Profile '{}'", profile_name))
+            );
+            print_detail_line("Status", "installing");
+
+            let result = if resolved.raw {
+                mcp::raw_install_for_profile(
+                    cli_name,
+                    &entry.name,
+                    &resolved.command,
+                    profile_name,
+                    cfg,
+                )
+            } else {
+                let request = mcp::McpInstallRequest {
+                    cli_name,
+                    server_name: &entry.name,
+                    transport: resolved.transport,
+                    url: resolved.url.as_deref(),
+                    env: &resolved.env,
+                    headers: &resolved.headers,
+                    bearer_token_env_var: resolved.bearer_token_env_var.as_deref(),
+                    command: &resolved.command,
+                };
+                mcp::install_for_profile(&request, profile_name, cfg)
+            };
+
+            match result {
+                Ok(()) => print_detail_line("Result", "installed"),
+                Err(err) => {
+                    print_detail_line("Result", "failed");
+                    print_detail_line("Error", &err.to_string());
+                    failures.push(format!("{}:{}", cli_name, profile_name));
+                }
+            }
+        }
+    }
+
+    if failures.is_empty() {
+        return Ok(());
+    }
+
+    Err(eyre!(
+        "MCP add failed for {} target(s): {}",
+        failures.len(),
+        failures.join(", ")
+    ))
+}
+
+fn resolve_add_targets(
+    entry: &mcp_registry::RegistryEntry,
+    requested: &[String],
+    yes: bool,
+) -> Result<Vec<String>> {
+    if !requested.is_empty() {
+        let mut out: Vec<String> = Vec::with_capacity(requested.len());
+        for cli in requested {
+            let trimmed = cli.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if !entry.supported.iter().any(|s| s == trimmed) {
+                return Err(eyre!(
+                    "MCP '{}' does not support CLI '{}' (supported: {})",
+                    entry.name,
+                    trimmed,
+                    entry.supported.join(", ")
+                ));
+            }
+            if !out.iter().any(|s| s == trimmed) {
+                out.push(trimmed.to_string());
+            }
+        }
+        if out.is_empty() {
+            return Err(eyre!("--for was provided but resolved to no valid CLI"));
+        }
+        return Ok(out);
+    }
+
+    if entry.supported.len() == 1 {
+        return Ok(entry.supported.clone());
+    }
+
+    if yes || !is_interactive_terminal() {
+        return Ok(entry.supported.clone());
+    }
+
+    prompt_add_targets(entry)
+}
+
+fn prompt_add_targets(entry: &mcp_registry::RegistryEntry) -> Result<Vec<String>> {
+    println!("'{}' supports: {}", entry.name, entry.supported.join(", "));
+    println!("Install for which CLI?");
+    println!("  [Enter] all");
+    for (idx, cli) in entry.supported.iter().enumerate() {
+        println!("  [{}] {}", idx + 1, cli);
+    }
+    print!("Select (default: all, or comma-separated names): ");
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let choice = input.trim();
+
+    if choice.is_empty() || choice.eq_ignore_ascii_case("a") || choice.eq_ignore_ascii_case("all") {
+        return Ok(entry.supported.clone());
+    }
+
+    if let Ok(n) = choice.parse::<usize>() {
+        if (1..=entry.supported.len()).contains(&n) {
+            return Ok(vec![entry.supported[n - 1].clone()]);
+        }
+        return Err(eyre!("selection '{}' out of range", n));
+    }
+
+    let mut selected: Vec<String> = Vec::new();
+    for raw in choice.split(',') {
+        let name = raw.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if !entry.supported.iter().any(|s| s == name) {
+            return Err(eyre!(
+                "unknown CLI '{}' (supported: {})",
+                name,
+                entry.supported.join(", ")
+            ));
+        }
+        if !selected.iter().any(|s| s == name) {
+            selected.push(name.to_string());
+        }
+    }
+
+    if selected.is_empty() {
+        return Err(eyre!("invalid selection"));
+    }
+    Ok(selected)
+}
+
+fn resolve_add_profile_scope(
+    cfg: &config::Config,
+    explicit_profile: Option<&str>,
+    force_all: bool,
+    force_current: bool,
+    yes: bool,
+) -> Result<Vec<String>> {
+    if let Some(name) = explicit_profile {
+        paths::validate_profile_name(name)?;
+        return Ok(vec![name.to_string()]);
+    }
+
+    let profiles = list_profiles()?;
+    if profiles.is_empty() {
+        return Err(eyre!("no profiles found. Run: cloak profile create <name>"));
+    }
+
+    if force_current {
+        let cwd = current_dir()?;
+        let resolved = profile::resolve_profile(&cwd, &cfg.general.default_profile)?;
+        return Ok(vec![resolved.name]);
+    }
+
+    if force_all || yes || !is_interactive_terminal() {
+        return Ok(profiles);
+    }
+
+    if confirm_default_yes(&format!("Install for all {} profiles?", profiles.len()))? {
+        return Ok(profiles);
+    }
+
+    let cwd = current_dir()?;
+    let resolved = profile::resolve_profile(&cwd, &cfg.general.default_profile)?;
+    Ok(vec![resolved.name])
+}
+
+fn transport_label(transport: McpTransport) -> &'static str {
+    match transport {
+        McpTransport::Stdio => "stdio",
+        McpTransport::Http => "http",
+        McpTransport::Sse => "sse",
+    }
+}
+
+fn print_registry_catalog(registry: &mcp_registry::Registry) {
+    println!("{}", format_main_heading("MCP Registry"));
+    print_detail_line("Count", &registry.len().to_string());
+    print_detail_line(
+        "Usage",
+        "cloak mcp add <name> [--for codex,claude] [--profile X | --no-all-profiles] [--yes]",
+    );
+
+    if registry.is_empty() {
+        return;
+    }
+
+    println!();
+    let mut table = new_ui_table(vec!["Name", "Transport", "CLIs", "Description"]);
+    for entry in registry.iter() {
+        table.add_row(vec![
+            Cell::new(&entry.name),
+            Cell::new(transport_label(entry.transport)),
+            Cell::new(entry.supported.join(", ")),
+            Cell::new(&entry.description),
+        ]);
+    }
+    println!("{}", table);
+}
+
+fn print_registry_show(
+    entry: &mcp_registry::RegistryEntry,
+    resolved_per_cli: &[(String, mcp_registry::ResolvedEntry)],
+) {
+    println!("{}", format_main_heading("MCP Show"));
+    print_detail_line("Name", &entry.name);
+    print_detail_line("Description", &entry.description);
+    if let Some(notes) = &entry.notes {
+        print_detail_line("Notes", notes);
+    }
+    print_detail_line("Transport", transport_label(entry.transport));
+    print_detail_line("Raw", if entry.raw { "yes" } else { "no" });
+
+    for (cli_name, resolved) in resolved_per_cli {
+        println!();
+        println!(
+            "{}",
+            format_section_title(&format!("CLI {}", format_cli_label(cli_name)))
+        );
+        if !resolved.command.is_empty() {
+            print_detail_line("Command", &resolved.command.join(" "));
+        }
+        if let Some(url) = &resolved.url {
+            print_detail_line("URL", url);
+        }
+        if !resolved.env.is_empty() {
+            print_detail_line("Env", &resolved.env.join(", "));
+        }
+        if !resolved.headers.is_empty() {
+            print_detail_line("Headers", &resolved.headers.join(", "));
+        }
+        if let Some(bearer) = &resolved.bearer_token_env_var {
+            print_detail_line("Bearer env var", bearer);
+        }
+    }
+}
+
+fn confirm_default_yes(question: &str) -> Result<bool> {
+    print!("{} [Y/n]: ", question);
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let decision = input.trim().to_ascii_lowercase();
+    Ok(decision.is_empty() || matches!(decision.as_str(), "y" | "yes"))
 }
 
 fn install_mcp(cfg: &config::Config, params: InstallMcpParams<'_>) -> Result<()> {
