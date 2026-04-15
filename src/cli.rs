@@ -99,6 +99,38 @@ pub enum ProfileCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum McpCommands {
+    /// Install an MCP server from the built-in registry (interactive)
+    ///
+    /// Running `cloak mcp add` without arguments prints the catalog.
+    Add {
+        /// MCP entry name (use `cloak mcp add` to see the catalog)
+        name: Option<String>,
+
+        /// Restrict target CLIs (comma-separated, e.g. `codex,claude`)
+        #[arg(long = "for", value_delimiter = ',')]
+        targets: Vec<String>,
+
+        /// Install only for this profile (conflicts with --all-profiles/--no-all-profiles)
+        #[arg(long, conflicts_with_all = ["all_profiles", "no_all_profiles"])]
+        profile: Option<String>,
+
+        /// Force installation for every existing profile (default when interactive)
+        #[arg(long, conflicts_with = "no_all_profiles")]
+        all_profiles: bool,
+
+        /// Restrict installation to the profile resolved from the current directory
+        #[arg(long)]
+        no_all_profiles: bool,
+
+        /// Accept defaults without prompting (all supported CLIs, all profiles)
+        #[arg(short = 'y', long)]
+        yes: bool,
+
+        /// Print the resolved command(s) for each target CLI without installing
+        #[arg(long)]
+        show: bool,
+    },
+
     /// Install an MCP server using the native CLI syntax for each supported tool
     #[command(trailing_var_arg = true)]
     Install {
@@ -396,6 +428,80 @@ mod tests {
             }
             _ => panic!("expected mcp install command"),
         }
+    }
+
+    #[test]
+    fn test_mcp_add_parses_without_name_for_catalog_listing() {
+        let parsed = Cli::parse_from(["cloak", "mcp", "add"]);
+        match parsed.command {
+            Commands::Mcp(McpCommands::Add {
+                name,
+                targets,
+                profile,
+                all_profiles,
+                no_all_profiles,
+                yes,
+                show,
+            }) => {
+                assert!(name.is_none());
+                assert!(targets.is_empty());
+                assert!(profile.is_none());
+                assert!(!all_profiles);
+                assert!(!no_all_profiles);
+                assert!(!yes);
+                assert!(!show);
+            }
+            _ => panic!("expected mcp add command"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_add_parses_targets_and_profile_scope() {
+        let parsed = Cli::parse_from([
+            "cloak",
+            "mcp",
+            "add",
+            "gitnexus",
+            "--for",
+            "codex,claude",
+            "--no-all-profiles",
+            "--yes",
+        ]);
+        match parsed.command {
+            Commands::Mcp(McpCommands::Add {
+                name,
+                targets,
+                profile,
+                all_profiles,
+                no_all_profiles,
+                yes,
+                show,
+            }) => {
+                assert_eq!(name.as_deref(), Some("gitnexus"));
+                assert_eq!(targets, vec!["codex".to_string(), "claude".to_string()]);
+                assert!(profile.is_none());
+                assert!(!all_profiles);
+                assert!(no_all_profiles);
+                assert!(yes);
+                assert!(!show);
+            }
+            _ => panic!("expected mcp add command"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_add_profile_conflicts_with_all_profiles() {
+        let err = Cli::try_parse_from([
+            "cloak",
+            "mcp",
+            "add",
+            "gitnexus",
+            "--profile",
+            "work",
+            "--all-profiles",
+        ])
+        .err();
+        assert!(err.is_some(), "expected conflict error");
     }
 
     #[test]
