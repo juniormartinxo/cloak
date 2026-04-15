@@ -1399,6 +1399,156 @@ mod unix_exec_tests {
         );
     }
 
+    #[test]
+    fn mcp_add_without_name_lists_catalog() {
+        let tmp = tempdir().expect("tempdir");
+        let xdg_config_home = tmp.path().join("xdg");
+        fs::create_dir_all(&xdg_config_home).expect("create xdg dir");
+
+        let output = Command::new(cloak_bin())
+            .arg("mcp")
+            .arg("add")
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak mcp add");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("MCP Registry"),
+            "missing heading:\n{stdout}"
+        );
+        for name in ["gitnexus", "playwright", "shadcn", "sentry"] {
+            assert!(
+                stdout.contains(name),
+                "missing entry '{name}' in catalog:\n{stdout}"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_add_show_prints_resolved_command() {
+        let tmp = tempdir().expect("tempdir");
+        let xdg_config_home = tmp.path().join("xdg");
+        fs::create_dir_all(&xdg_config_home).expect("create xdg dir");
+
+        let output = Command::new(cloak_bin())
+            .arg("mcp")
+            .arg("add")
+            .arg("gitnexus")
+            .arg("--for")
+            .arg("codex")
+            .arg("--show")
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak mcp add --show");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("MCP Show"), "missing heading:\n{stdout}");
+        assert!(
+            stdout.contains("npx -y gitnexus@latest mcp"),
+            "missing resolved command:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn mcp_add_unknown_entry_errors_with_available_names() {
+        let tmp = tempdir().expect("tempdir");
+        let xdg_config_home = tmp.path().join("xdg");
+        fs::create_dir_all(&xdg_config_home).expect("create xdg dir");
+
+        let output = Command::new(cloak_bin())
+            .arg("mcp")
+            .arg("add")
+            .arg("totally-unknown-mcp")
+            .arg("--show")
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak mcp add unknown");
+
+        assert!(
+            !output.status.success(),
+            "expected failure, stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("not in the registry"),
+            "missing error message:\n{stderr}"
+        );
+        assert!(stderr.contains("gitnexus"), "missing hint:\n{stderr}");
+    }
+
+    #[test]
+    fn mcp_add_installs_registry_entry_for_selected_cli_and_profile() {
+        let tmp = tempdir().expect("tempdir");
+        let bin_dir = tmp.path().join("bin");
+        let xdg_config_home = tmp.path().join("xdg");
+        let profiles_root = xdg_config_home.join("cloak").join("profiles");
+
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+        fs::create_dir_all(profiles_root.join("personal")).expect("create personal profile");
+        fs::create_dir_all(profiles_root.join("work")).expect("create work profile");
+
+        let mock_binary = create_mock_binary(&bin_dir);
+        write_mcp_config(&xdg_config_home, &mock_binary);
+
+        let output = Command::new(cloak_bin())
+            .arg("mcp")
+            .arg("add")
+            .arg("gitnexus")
+            .arg("--for")
+            .arg("codex")
+            .arg("--profile")
+            .arg("work")
+            .arg("--yes")
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak mcp add gitnexus --for codex --profile work");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!(
+                "CODEX_HOME={}",
+                profiles_root.join("work/codex").display()
+            )),
+            "missing work CODEX_HOME:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("ARGS=mcp add gitnexus -- npx -y gitnexus@latest mcp"),
+            "missing forwarded codex mcp add args:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains(&format!(
+                "CODEX_HOME={}",
+                profiles_root.join("personal/codex").display()
+            )),
+            "unexpected personal install leaked into output:\n{stdout}"
+        );
+    }
+
     fn cloak_bin() -> PathBuf {
         if let Some(path) = std::env::var_os("CARGO_BIN_EXE_cloak").map(PathBuf::from) {
             return path;
