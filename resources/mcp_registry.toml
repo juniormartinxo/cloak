@@ -1,0 +1,123 @@
+# Built-in MCP registry used by `cloak mcp add <name>`.
+#
+# Schema (see src/mcp_registry.rs for the authoritative parser):
+#
+#   [<name>]
+#   description = "human-readable summary"              # required
+#   transport   = "stdio" | "http" | "sse"              # required
+#   supported   = ["codex", "claude"]                   # required for stdio without command_per_cli
+#   raw         = false                                  # optional, stdio only, default false
+#   notes       = "free-form hint shown at install"     # optional
+#
+#   # --- stdio ---
+#   command     = ["npx", "-y", "foo@latest"]           # shared across supported CLIs
+#   # or per CLI (keys become the `supported` set when present)
+#   [<name>.command_per_cli]
+#   codex  = ["npx", "foo@latest", "--client", "codex"]
+#   claude = ["npx", "foo@latest", "--client", "claude"]
+#
+#   env = ["KEY=VALUE"]                                  # stdio only; VALUE may reference ${VAR}
+#
+#   # --- http / sse ---
+#   url = "https://..."                                  # may reference ${VAR}
+#   headers = ["Authorization: Bearer ${TOKEN}"]         # http/sse; may reference ${VAR}
+#   bearer_token_env_var = "FOO_TOKEN"                   # codex-only HTTP shortcut
+#
+# String fields support `${VAR}` expansion from the shell environment.
+# Two synthetic names are always available:
+#   ${CWD}  — current working directory at install time
+#   ${HOME} — user home directory
+#
+# Missing `${VAR}` references abort the install with an explicit error.
+
+# --- Official reference servers (modelcontextprotocol/servers) ---
+
+[everything]
+description = "Reference MCP server with sample tools, prompts and resources"
+transport   = "stdio"
+command     = ["npx", "-y", "@modelcontextprotocol/server-everything"]
+supported   = ["codex", "claude"]
+
+[fetch]
+description = "Fetch web URLs and convert HTML to markdown"
+transport   = "stdio"
+command     = ["uvx", "mcp-server-fetch"]
+supported   = ["codex", "claude"]
+notes       = "Requires uv (https://docs.astral.sh/uv/). Install: curl -LsSf https://astral.sh/uv/install.sh | sh"
+
+[filesystem]
+description = "Read/write files under an allowed path (defaults to CWD at install time)"
+transport   = "stdio"
+command     = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "${CWD}"]
+supported   = ["codex", "claude"]
+notes       = "Exposes the directory where you run `cloak mcp add`. Edit the generated CLI config to rebind."
+
+[git]
+description = "Read, search and manipulate a Git repository"
+transport   = "stdio"
+command     = ["uvx", "mcp-server-git", "--repository", "${CWD}"]
+supported   = ["codex", "claude"]
+notes       = "Requires uv. Binds to the current working directory at install time."
+
+[memory]
+description = "Knowledge-graph based persistent memory"
+transport   = "stdio"
+command     = ["npx", "-y", "@modelcontextprotocol/server-memory"]
+supported   = ["codex", "claude"]
+
+[sequential-thinking]
+description = "Dynamic, reflective problem-solving via thought sequences"
+transport   = "stdio"
+command     = ["npx", "-y", "@modelcontextprotocol/server-sequential-thinking"]
+supported   = ["codex", "claude"]
+
+[time]
+description = "Time and timezone conversion utilities"
+transport   = "stdio"
+command     = ["uvx", "mcp-server-time"]
+supported   = ["codex", "claude"]
+notes       = "Requires uv."
+
+# --- Popular third-party servers ---
+
+[playwright]
+description = "Browser automation via Playwright (Microsoft's official MCP)"
+transport   = "stdio"
+command     = ["npx", "-y", "@playwright/mcp@latest"]
+supported   = ["codex", "claude"]
+
+[context7]
+description = "Up-to-date library docs and code snippets (Upstash)"
+transport   = "stdio"
+command     = ["npx", "-y", "@upstash/context7-mcp"]
+supported   = ["codex", "claude"]
+
+[gitnexus]
+description = "Code intelligence: callgraph, impact analysis, rename, process traces"
+transport   = "stdio"
+command     = ["npx", "-y", "gitnexus@latest", "mcp"]
+supported   = ["codex", "claude"]
+
+[shadcn]
+description = "shadcn/ui registry MCP (raw installer, injects --client per CLI)"
+transport   = "stdio"
+raw         = true
+
+[shadcn.command_per_cli]
+codex  = ["npx", "shadcn@latest", "mcp", "init", "--client", "codex"]
+claude = ["npx", "shadcn@latest", "mcp", "init", "--client", "claude"]
+
+[github]
+description = "GitHub API access (requires GITHUB_PERSONAL_ACCESS_TOKEN in env)"
+transport   = "stdio"
+command     = ["npx", "-y", "@modelcontextprotocol/server-github"]
+env         = ["GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN}"]
+supported   = ["codex", "claude"]
+notes       = "Export GITHUB_PERSONAL_ACCESS_TOKEN in your shell before running."
+
+[sentry]
+description = "Sentry issues and errors via remote HTTP MCP"
+transport   = "http"
+url         = "https://mcp.sentry.dev/mcp"
+supported   = ["codex", "claude"]
+notes       = "Auth is handled on first tool call by each CLI (OAuth/device flow)."
