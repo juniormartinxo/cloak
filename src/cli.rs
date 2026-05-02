@@ -129,6 +129,10 @@ pub enum McpCommands {
         /// Print the resolved command(s) for each target CLI without installing
         #[arg(long)]
         show: bool,
+
+        /// Remove an existing registration before adding (idempotent re-install)
+        #[arg(long)]
+        replace: bool,
     },
 
     /// Install an MCP server using the native CLI syntax for each supported tool
@@ -172,9 +176,77 @@ pub enum McpCommands {
         #[arg(long)]
         raw: bool,
 
+        /// Remove an existing registration before adding (idempotent re-install)
+        #[arg(long)]
+        replace: bool,
+
         /// Stdio command forwarded after `--`
         #[arg(allow_hyphen_values = true)]
         command: Vec<String>,
+    },
+
+    /// Remove an MCP server registration from one or more CLI profiles
+    ///
+    /// Delegates to the native `mcp remove` of each CLI (codex, claude). If the
+    /// server is not present for a given (CLI, profile) pair, that pair is
+    /// reported as `not installed` and skipped — the command is idempotent.
+    Remove {
+        /// MCP server name to remove
+        name: String,
+
+        /// Restrict target CLIs (comma-separated, e.g. `codex,claude`)
+        #[arg(long = "for", value_delimiter = ',')]
+        targets: Vec<String>,
+
+        /// Remove only from this profile (conflicts with --all-profiles/--no-all-profiles)
+        #[arg(long, conflicts_with_all = ["all_profiles", "no_all_profiles"])]
+        profile: Option<String>,
+
+        /// Force removal from every existing profile (default when interactive)
+        #[arg(long, conflicts_with = "no_all_profiles")]
+        all_profiles: bool,
+
+        /// Restrict removal to the profile resolved from the current directory
+        #[arg(long)]
+        no_all_profiles: bool,
+
+        /// Accept defaults without prompting (all supported CLIs, all profiles)
+        #[arg(short = 'y', long)]
+        yes: bool,
+
+        /// Print what would be removed without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Health-check configured MCP servers by running a real JSON-RPC handshake
+    ///
+    /// Spawns each stdio MCP, sends `initialize`, waits for the reply with a timeout,
+    /// and reports OK or the captured stderr when the process dies before answering.
+    Doctor {
+        /// Restrict target CLIs (comma-separated, e.g. `codex,claude`)
+        #[arg(long = "for", value_delimiter = ',')]
+        targets: Vec<String>,
+
+        /// Check only this profile (conflicts with --all-profiles)
+        #[arg(long, conflicts_with = "all_profiles")]
+        profile: Option<String>,
+
+        /// Check every existing profile instead of the one resolved from CWD
+        #[arg(long, conflicts_with = "profile")]
+        all_profiles: bool,
+
+        /// Check only this MCP server by name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Seconds to wait for the `initialize` reply before declaring timeout
+        #[arg(long, default_value_t = 5)]
+        timeout: u64,
+
+        /// After a successful `initialize`, also issue `tools/list`
+        #[arg(long)]
+        with_tools: bool,
     },
 }
 
@@ -368,6 +440,7 @@ mod tests {
                 header,
                 bearer_token_env_var,
                 raw,
+                replace,
                 command,
             }) => {
                 assert_eq!(cli, "codex");
@@ -375,6 +448,7 @@ mod tests {
                 assert_eq!(profile.as_deref(), Some("work"));
                 assert!(!all_profiles);
                 assert!(!raw);
+                assert!(!replace);
                 assert_eq!(transport, McpTransport::Stdio);
                 assert_eq!(url, None);
                 assert_eq!(env, vec!["API_KEY=secret"]);
@@ -442,6 +516,7 @@ mod tests {
                 no_all_profiles,
                 yes,
                 show,
+                replace,
             }) => {
                 assert!(name.is_none());
                 assert!(targets.is_empty());
@@ -450,6 +525,7 @@ mod tests {
                 assert!(!no_all_profiles);
                 assert!(!yes);
                 assert!(!show);
+                assert!(!replace);
             }
             _ => panic!("expected mcp add command"),
         }
@@ -476,6 +552,7 @@ mod tests {
                 no_all_profiles,
                 yes,
                 show,
+                replace,
             }) => {
                 assert_eq!(name.as_deref(), Some("gitnexus"));
                 assert_eq!(targets, vec!["codex".to_string(), "claude".to_string()]);
@@ -484,9 +561,216 @@ mod tests {
                 assert!(no_all_profiles);
                 assert!(yes);
                 assert!(!show);
+                assert!(!replace);
             }
             _ => panic!("expected mcp add command"),
         }
+    }
+
+    #[test]
+    fn test_mcp_add_parses_replace_flag() {
+        let parsed = Cli::parse_from([
+            "cloak",
+            "mcp",
+            "add",
+            "gitnexus",
+            "--for",
+            "claude",
+            "--replace",
+            "--yes",
+        ]);
+        match parsed.command {
+            Commands::Mcp(McpCommands::Add { replace, yes, .. }) => {
+                assert!(replace);
+                assert!(yes);
+            }
+            _ => panic!("expected mcp add command"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_install_parses_replace_flag() {
+        let parsed = Cli::parse_from([
+            "cloak",
+            "mcp",
+            "install",
+            "claude",
+            "gitnexus",
+            "--all-profiles",
+            "--replace",
+            "--",
+            "/abs/node",
+            "/abs/gitnexus.js",
+            "mcp",
+        ]);
+        match parsed.command {
+            Commands::Mcp(McpCommands::Install {
+                cli,
+                name,
+                replace,
+                command,
+                ..
+            }) => {
+                assert_eq!(cli, "claude");
+                assert_eq!(name, "gitnexus");
+                assert!(replace);
+                assert_eq!(command, vec!["/abs/node", "/abs/gitnexus.js", "mcp"]);
+            }
+            _ => panic!("expected mcp install command"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_remove_parses_defaults() {
+        let parsed = Cli::parse_from(["cloak", "mcp", "remove", "gitnexus"]);
+        match parsed.command {
+            Commands::Mcp(McpCommands::Remove {
+                name,
+                targets,
+                profile,
+                all_profiles,
+                no_all_profiles,
+                yes,
+                dry_run,
+            }) => {
+                assert_eq!(name, "gitnexus");
+                assert!(targets.is_empty());
+                assert!(profile.is_none());
+                assert!(!all_profiles);
+                assert!(!no_all_profiles);
+                assert!(!yes);
+                assert!(!dry_run);
+            }
+            _ => panic!("expected mcp remove command"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_remove_parses_filters() {
+        let parsed = Cli::parse_from([
+            "cloak",
+            "mcp",
+            "remove",
+            "gitnexus",
+            "--for",
+            "codex,claude",
+            "--no-all-profiles",
+            "--yes",
+            "--dry-run",
+        ]);
+        match parsed.command {
+            Commands::Mcp(McpCommands::Remove {
+                name,
+                targets,
+                profile,
+                all_profiles,
+                no_all_profiles,
+                yes,
+                dry_run,
+            }) => {
+                assert_eq!(name, "gitnexus");
+                assert_eq!(targets, vec!["codex".to_string(), "claude".to_string()]);
+                assert!(profile.is_none());
+                assert!(!all_profiles);
+                assert!(no_all_profiles);
+                assert!(yes);
+                assert!(dry_run);
+            }
+            _ => panic!("expected mcp remove command"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_remove_profile_conflicts_with_all_profiles() {
+        let err = Cli::try_parse_from([
+            "cloak",
+            "mcp",
+            "remove",
+            "gitnexus",
+            "--profile",
+            "work",
+            "--all-profiles",
+        ])
+        .err();
+        assert!(err.is_some(), "expected conflict error");
+    }
+
+    #[test]
+    fn test_mcp_remove_requires_name() {
+        let err = Cli::try_parse_from(["cloak", "mcp", "remove"]).err();
+        assert!(err.is_some(), "name should be required");
+    }
+
+    #[test]
+    fn test_mcp_doctor_parses_defaults() {
+        let parsed = Cli::parse_from(["cloak", "mcp", "doctor"]);
+        match parsed.command {
+            Commands::Mcp(McpCommands::Doctor {
+                targets,
+                profile,
+                all_profiles,
+                name,
+                timeout,
+                with_tools,
+            }) => {
+                assert!(targets.is_empty());
+                assert!(profile.is_none());
+                assert!(!all_profiles);
+                assert!(name.is_none());
+                assert_eq!(timeout, 5);
+                assert!(!with_tools);
+            }
+            _ => panic!("expected mcp doctor command"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_doctor_parses_filters() {
+        let parsed = Cli::parse_from([
+            "cloak",
+            "mcp",
+            "doctor",
+            "--for",
+            "codex,claude",
+            "--name",
+            "gitnexus",
+            "--timeout",
+            "10",
+            "--with-tools",
+            "--all-profiles",
+        ]);
+        match parsed.command {
+            Commands::Mcp(McpCommands::Doctor {
+                targets,
+                profile,
+                all_profiles,
+                name,
+                timeout,
+                with_tools,
+            }) => {
+                assert_eq!(targets, vec!["codex".to_string(), "claude".to_string()]);
+                assert!(profile.is_none());
+                assert!(all_profiles);
+                assert_eq!(name.as_deref(), Some("gitnexus"));
+                assert_eq!(timeout, 10);
+                assert!(with_tools);
+            }
+            _ => panic!("expected mcp doctor command"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_doctor_profile_conflicts_with_all_profiles() {
+        let err = Cli::try_parse_from([
+            "cloak",
+            "mcp",
+            "doctor",
+            "--profile",
+            "work",
+            "--all-profiles",
+        ])
+        .err();
+        assert!(err.is_some(), "expected conflict error");
     }
 
     #[test]
