@@ -79,6 +79,61 @@ pub fn raw_install_for_profile(
     ))
 }
 
+pub fn remove_for_profile(
+    cli_name: &str,
+    server_name: &str,
+    profile: &str,
+    config: &Config,
+) -> Result<()> {
+    let args = build_remove_args(cli_name, server_name)?;
+    let mut cmd = exec::prepare_cli_command(cli_name, profile, config)?;
+    cmd.args(&args);
+
+    let status = cmd.status().map_err(|err| {
+        eyre!(
+            "failed running '{}' MCP remove for profile '{}': {}",
+            cli_name,
+            profile,
+            err
+        )
+    })?;
+
+    if status.success() {
+        return Ok(());
+    }
+
+    Err(eyre!(
+        "MCP remove failed for CLI '{}' in profile '{}'",
+        cli_name,
+        profile
+    ))
+}
+
+pub fn build_remove_args(cli_name: &str, server_name: &str) -> Result<Vec<String>> {
+    if server_name.trim().is_empty() {
+        return Err(eyre!("MCP server name cannot be empty"));
+    }
+
+    match cli_name {
+        "codex" => Ok(vec![
+            "mcp".to_string(),
+            "remove".to_string(),
+            server_name.to_string(),
+        ]),
+        "claude" => Ok(vec![
+            "mcp".to_string(),
+            "remove".to_string(),
+            "--scope".to_string(),
+            "user".to_string(),
+            server_name.to_string(),
+        ]),
+        other => Err(eyre!(
+            "CLI '{}' does not have a known native MCP removal flow in cloak yet",
+            other
+        )),
+    }
+}
+
 pub fn build_install_args(request: &McpInstallRequest<'_>) -> Result<Vec<String>> {
     validate_request(request)?;
 
@@ -233,7 +288,31 @@ fn build_claude_install_args(request: &McpInstallRequest<'_>) -> Result<Vec<Stri
 mod tests {
     use crate::cli::McpTransport;
 
-    use super::{build_install_args, McpInstallRequest};
+    use super::{build_install_args, build_remove_args, McpInstallRequest};
+
+    #[test]
+    fn remove_args_for_codex_are_plain() {
+        let args = build_remove_args("codex", "gitnexus").expect("build");
+        assert_eq!(args, vec!["mcp", "remove", "gitnexus"]);
+    }
+
+    #[test]
+    fn remove_args_for_claude_carry_user_scope() {
+        let args = build_remove_args("claude", "gitnexus").expect("build");
+        assert_eq!(args, vec!["mcp", "remove", "--scope", "user", "gitnexus"]);
+    }
+
+    #[test]
+    fn remove_args_reject_unknown_cli() {
+        let err = build_remove_args("gemini", "gitnexus").expect_err("must fail");
+        assert!(err.to_string().contains("does not have a known"));
+    }
+
+    #[test]
+    fn remove_args_reject_empty_name() {
+        let err = build_remove_args("codex", "  ").expect_err("must fail");
+        assert!(err.to_string().contains("cannot be empty"));
+    }
 
     #[test]
     fn codex_stdio_args_match_native_shape() {
