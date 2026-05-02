@@ -4,6 +4,7 @@ mod config;
 mod doctor;
 mod exec;
 mod mcp;
+mod mcp_doctor;
 mod mcp_registry;
 mod paths;
 mod profile;
@@ -152,6 +153,7 @@ fn main() -> Result<()> {
                 no_all_profiles,
                 yes,
                 show,
+                replace,
             } => {
                 run_mcp_add(
                     &loaded.config,
@@ -163,6 +165,7 @@ fn main() -> Result<()> {
                         no_all_profiles,
                         yes,
                         show,
+                        replace,
                     },
                 )?;
             }
@@ -177,6 +180,7 @@ fn main() -> Result<()> {
                 header,
                 bearer_token_env_var,
                 raw,
+                replace,
                 command,
             } => {
                 install_mcp(
@@ -192,7 +196,50 @@ fn main() -> Result<()> {
                         headers: &header,
                         bearer_token_env_var: bearer_token_env_var.as_deref(),
                         raw,
+                        replace,
                         command: &command,
+                    },
+                )?;
+            }
+            McpCommands::Remove {
+                name,
+                targets,
+                profile,
+                all_profiles,
+                no_all_profiles,
+                yes,
+                dry_run,
+            } => {
+                run_mcp_remove(
+                    &loaded.config,
+                    RemoveMcpParams {
+                        name: &name,
+                        targets: &targets,
+                        profile: profile.as_deref(),
+                        all_profiles,
+                        no_all_profiles,
+                        yes,
+                        dry_run,
+                    },
+                )?;
+            }
+            McpCommands::Doctor {
+                targets,
+                profile,
+                all_profiles,
+                name,
+                timeout,
+                with_tools,
+            } => {
+                run_mcp_doctor(
+                    &loaded.config,
+                    DoctorParams {
+                        targets: &targets,
+                        profile: profile.as_deref(),
+                        all_profiles,
+                        name: name.as_deref(),
+                        timeout_secs: timeout,
+                        with_tools,
                     },
                 )?;
             }
@@ -272,6 +319,7 @@ struct InstallMcpParams<'a> {
     headers: &'a [String],
     bearer_token_env_var: Option<&'a str>,
     raw: bool,
+    replace: bool,
     command: &'a [String],
 }
 
@@ -283,6 +331,26 @@ struct AddMcpParams<'a> {
     no_all_profiles: bool,
     yes: bool,
     show: bool,
+    replace: bool,
+}
+
+struct DoctorParams<'a> {
+    targets: &'a [String],
+    profile: Option<&'a str>,
+    all_profiles: bool,
+    name: Option<&'a str>,
+    timeout_secs: u64,
+    with_tools: bool,
+}
+
+struct RemoveMcpParams<'a> {
+    name: &'a str,
+    targets: &'a [String],
+    profile: Option<&'a str>,
+    all_profiles: bool,
+    no_all_profiles: bool,
+    yes: bool,
+    dry_run: bool,
 }
 
 fn run_mcp_add(cfg: &config::Config, params: AddMcpParams<'_>) -> Result<()> {
@@ -362,7 +430,21 @@ fn run_mcp_add(cfg: &config::Config, params: AddMcpParams<'_>) -> Result<()> {
                 "{}",
                 format_section_title(&format!("Profile '{}'", profile_name))
             );
-            print_detail_line("Status", "installing");
+
+            if params.replace {
+                match replace_remove_if_present(cli_name, &entry.name, profile_name, cfg) {
+                    Ok(true) => print_detail_line("Status", "replacing (removed existing)"),
+                    Ok(false) => print_detail_line("Status", "installing"),
+                    Err(err) => {
+                        print_detail_line("Result", "failed");
+                        print_detail_line("Error", &format!("pre-remove failed: {err}"));
+                        failures.push(format!("{}:{}", cli_name, profile_name));
+                        continue;
+                    }
+                }
+            } else {
+                print_detail_line("Status", "installing");
+            }
 
             let result = if resolved.raw {
                 mcp::raw_install_for_profile(
@@ -406,6 +488,325 @@ fn run_mcp_add(cfg: &config::Config, params: AddMcpParams<'_>) -> Result<()> {
         failures.len(),
         failures.join(", ")
     ))
+}
+
+fn run_mcp_remove(cfg: &config::Config, params: RemoveMcpParams<'_>) -> Result<()> {
+    if params.name.trim().is_empty() {
+        return Err(eyre!("MCP server name cannot be empty"));
+    }
+
+    let targets = resolve_remove_cli_targets(cfg, params.targets)?;
+    let profiles = resolve_add_profile_scope(
+        cfg,
+        params.profile,
+        params.all_profiles,
+        params.no_all_profiles,
+        params.yes,
+    )?;
+
+    println!(
+        "{}",
+        format_main_heading(if params.dry_run {
+            "MCP Remove (dry-run)"
+        } else {
+            "MCP Remove"
+        })
+    );
+    print_detail_line("Name", params.name);
+    print_detail_line("CLIs", &targets.join(", "));
+    let profile_scope_label = if params.profile.is_some() {
+        format!("'{}'", profiles[0])
+    } else if params.no_all_profiles {
+        format!("current ('{}')", profiles[0])
+    } else {
+        format!("all profiles ({})", profiles.len())
+    };
+    print_detail_line("Profiles", &profile_scope_label);
+
+    let mut failures: Vec<String> = Vec::new();
+    let mut removed: usize = 0;
+    let mut skipped: usize = 0;
+
+    for cli_name in &targets {
+        println!();
+        println!(
+            "{}",
+            format_section_title(&format!("CLI {}", format_cli_label(cli_name)))
+        );
+
+        for profile_name in &profiles {
+            println!();
+            println!(
+                "{}",
+                format_section_title(&format!("Profile '{}'", profile_name))
+            );
+
+            let entries = mcp_doctor::read_entries_for(cli_name, profile_name)?;
+            let present = entries.iter().any(|e| e.server_name == params.name);
+
+            if !present {
+                print_detail_line("Status", "not installed");
+                skipped += 1;
+                continue;
+            }
+
+            if params.dry_run {
+                print_detail_line("Status", "would remove");
+                removed += 1;
+                continue;
+            }
+
+            print_detail_line("Status", "removing");
+            match mcp::remove_for_profile(cli_name, params.name, profile_name, cfg) {
+                Ok(()) => {
+                    print_detail_line("Result", "removed");
+                    removed += 1;
+                }
+                Err(err) => {
+                    print_detail_line("Result", "failed");
+                    print_detail_line("Error", &err.to_string());
+                    failures.push(format!("{}:{}", cli_name, profile_name));
+                }
+            }
+        }
+    }
+
+    println!();
+    print_detail_line(
+        "Summary",
+        &format!(
+            "removed={} skipped={} failed={}",
+            removed,
+            skipped,
+            failures.len()
+        ),
+    );
+
+    if failures.is_empty() {
+        return Ok(());
+    }
+
+    Err(eyre!(
+        "MCP remove failed for {} target(s): {}",
+        failures.len(),
+        failures.join(", ")
+    ))
+}
+
+fn replace_remove_if_present(
+    cli_name: &str,
+    server_name: &str,
+    profile_name: &str,
+    cfg: &config::Config,
+) -> Result<bool> {
+    let entries = mcp_doctor::read_entries_for(cli_name, profile_name)?;
+    if !entries.iter().any(|e| e.server_name == server_name) {
+        return Ok(false);
+    }
+    mcp::remove_for_profile(cli_name, server_name, profile_name, cfg)?;
+    Ok(true)
+}
+
+fn resolve_remove_cli_targets(cfg: &config::Config, requested: &[String]) -> Result<Vec<String>> {
+    const SUPPORTED: &[&str] = &["codex", "claude"];
+
+    if !requested.is_empty() {
+        for target in requested {
+            if !SUPPORTED.contains(&target.as_str()) {
+                return Err(eyre!(
+                    "unsupported CLI '{target}' for mcp remove (supported: {})",
+                    SUPPORTED.join(", ")
+                ));
+            }
+        }
+        return Ok(requested.to_vec());
+    }
+
+    let mut out = Vec::new();
+    for name in SUPPORTED {
+        if cfg.cli.contains_key(*name) {
+            out.push((*name).to_string());
+        }
+    }
+    if out.is_empty() {
+        return Err(eyre!(
+            "no supported CLIs (codex, claude) configured in config.toml"
+        ));
+    }
+    Ok(out)
+}
+
+fn run_mcp_doctor(cfg: &config::Config, params: DoctorParams<'_>) -> Result<()> {
+    let profiles = resolve_doctor_profile_scope(cfg, params.profile, params.all_profiles)?;
+    let clis = resolve_doctor_cli_targets(cfg, params.targets)?;
+
+    let mut entries: Vec<mcp_doctor::McpEntry> = Vec::new();
+    for profile in &profiles {
+        paths::validate_profile_name(profile)?;
+        for cli in &clis {
+            let found = mcp_doctor::read_entries_for(cli, profile)?;
+            entries.extend(found);
+        }
+    }
+
+    if let Some(name) = params.name {
+        entries.retain(|entry| entry.server_name == name);
+    }
+
+    println!("{}", format_main_heading("MCP Doctor"));
+    print_detail_line("Profiles", &profiles.join(", "));
+    print_detail_line("CLIs", &clis.join(", "));
+    print_detail_line("Timeout", &format!("{}s", params.timeout_secs));
+    print_detail_line("Count", &entries.len().to_string());
+
+    if entries.is_empty() {
+        print_detail_line(
+            "Status",
+            "no MCP servers matched. Configure with `cloak mcp add`.",
+        );
+        return Ok(());
+    }
+
+    let timeout = std::time::Duration::from_secs(params.timeout_secs.max(1));
+    let mut failures: usize = 0;
+    let mut last_header: Option<(String, String)> = None;
+
+    for entry in &entries {
+        let header_key = (entry.cli.clone(), entry.profile.clone());
+        if last_header.as_ref() != Some(&header_key) {
+            println!();
+            println!(
+                "{}",
+                format_section_title(&format!(
+                    "CLI {} · Profile '{}'",
+                    format_cli_label(&entry.cli),
+                    entry.profile
+                ))
+            );
+            last_header = Some(header_key);
+        }
+
+        let result = mcp_doctor::probe(entry, timeout, params.with_tools);
+        print_doctor_result(&result);
+
+        if matches!(result.outcome, mcp_doctor::ProbeOutcome::Failed { .. }) {
+            failures += 1;
+        }
+    }
+
+    if failures > 0 {
+        return Err(eyre!("{failures} MCP health check(s) failed"));
+    }
+    Ok(())
+}
+
+fn resolve_doctor_profile_scope(
+    cfg: &config::Config,
+    explicit_profile: Option<&str>,
+    force_all: bool,
+) -> Result<Vec<String>> {
+    if let Some(name) = explicit_profile {
+        paths::validate_profile_name(name)?;
+        return Ok(vec![name.to_string()]);
+    }
+
+    if force_all {
+        let profiles = list_profiles()?;
+        if profiles.is_empty() {
+            return Err(eyre!("no profiles found. Run: cloak profile create <name>"));
+        }
+        return Ok(profiles);
+    }
+
+    let cwd = current_dir()?;
+    let resolved = profile::resolve_profile(&cwd, &cfg.general.default_profile)?;
+    Ok(vec![resolved.name])
+}
+
+fn resolve_doctor_cli_targets(cfg: &config::Config, requested: &[String]) -> Result<Vec<String>> {
+    const SUPPORTED: &[&str] = &["codex", "claude"];
+
+    if !requested.is_empty() {
+        for target in requested {
+            if !SUPPORTED.contains(&target.as_str()) {
+                return Err(eyre!(
+                    "unsupported CLI '{target}' for mcp doctor (supported: {})",
+                    SUPPORTED.join(", ")
+                ));
+            }
+        }
+        return Ok(requested.to_vec());
+    }
+
+    let mut out = Vec::new();
+    for name in SUPPORTED {
+        if cfg.cli.contains_key(*name) {
+            out.push((*name).to_string());
+        }
+    }
+    if out.is_empty() {
+        return Err(eyre!(
+            "no supported CLIs (codex, claude) configured in config.toml"
+        ));
+    }
+    Ok(out)
+}
+
+fn print_doctor_result(result: &mcp_doctor::ProbeResult) {
+    let server = &result.entry.server_name;
+    let elapsed = format!("{}ms", result.elapsed_ms);
+    let is_term = io::stdout().is_terminal();
+
+    match &result.outcome {
+        mcp_doctor::ProbeOutcome::Ok {
+            server_name,
+            server_version,
+            protocol_version,
+            tools,
+        } => {
+            let sym = if is_term {
+                "✓".green().bold().to_string()
+            } else {
+                "OK".to_string()
+            };
+            let info = match (server_name.as_deref(), server_version.as_deref()) {
+                (Some(n), Some(v)) => format!("{n} {v}"),
+                (Some(n), None) => n.to_string(),
+                (None, Some(v)) => format!("version {v}"),
+                (None, None) => "ok".to_string(),
+            };
+            println!("  {sym} {server}: {info} ({elapsed})");
+            if let Some(proto) = protocol_version {
+                print_detail_line("Protocol", proto);
+            }
+            if let Some(names) = tools {
+                if names.is_empty() {
+                    print_detail_line("Tools", "(none)");
+                } else {
+                    print_detail_line("Tools", &names.join(", "));
+                }
+            }
+        }
+        mcp_doctor::ProbeOutcome::Skipped { reason } => {
+            let sym = if is_term {
+                "…".bright_black().to_string()
+            } else {
+                "SKIP".to_string()
+            };
+            println!("  {sym} {server}: {reason}");
+        }
+        mcp_doctor::ProbeOutcome::Failed { reason, stderr } => {
+            let sym = if is_term {
+                "✗".red().bold().to_string()
+            } else {
+                "FAIL".to_string()
+            };
+            println!("  {sym} {server}: {reason} ({elapsed})");
+            if let Some(stderr) = stderr {
+                print_detail_line("Stderr", stderr);
+            }
+        }
+    }
 }
 
 fn resolve_add_targets(
@@ -684,7 +1085,22 @@ fn install_mcp(cfg: &config::Config, params: InstallMcpParams<'_>) -> Result<()>
             "{}",
             format_section_title(&format!("Profile '{}'", profile_name))
         );
-        print_detail_line("Status", "installing");
+
+        if params.replace {
+            match replace_remove_if_present(params.cli_name, params.server_name, profile_name, cfg)
+            {
+                Ok(true) => print_detail_line("Status", "replacing (removed existing)"),
+                Ok(false) => print_detail_line("Status", "installing"),
+                Err(err) => {
+                    print_detail_line("Result", "failed");
+                    print_detail_line("Error", &format!("pre-remove failed: {err}"));
+                    failures.push(profile_name.clone());
+                    continue;
+                }
+            }
+        } else {
+            print_detail_line("Status", "installing");
+        }
 
         let result = if params.raw {
             mcp::raw_install_for_profile(
