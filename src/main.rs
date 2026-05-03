@@ -15,6 +15,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use rustyline::{error::ReadlineError, DefaultEditor};
+
 use clap::Parser;
 use clap_complete::generate;
 use color_eyre::eyre::{eyre, Context, Result};
@@ -1439,8 +1441,14 @@ fn ask_permissions(
     let allowed_commands = normalize_command_list(allowed_commands)?;
     let mut deny_commands = normalize_command_list(deny_commands)?;
     if include_dangerous_in_deny {
-        deny_commands = merge_command_lists(deny_commands, dangerous_command_names());
+        let dangerous_to_add: Vec<String> = dangerous_command_names()
+            .into_iter()
+            .filter(|cmd| !allowed_commands.iter().any(|allowed| allowed == cmd))
+            .collect();
+        deny_commands = merge_command_lists(deny_commands, dangerous_to_add);
     }
+
+    deny_commands.retain(|cmd| !allowed_commands.iter().any(|allowed| allowed == cmd));
 
     let overlapping = overlap(&allowed_commands, &deny_commands);
     if !overlapping.is_empty() {
@@ -1459,6 +1467,21 @@ fn ask_permissions(
     })
 }
 
+fn read_line_edit(prompt: &str, initial: &str) -> Result<String> {
+    let mut editor = DefaultEditor::new().wrap_err("falha ao iniciar editor de linha")?;
+    let result = if initial.is_empty() {
+        editor.readline(prompt)
+    } else {
+        editor.readline_with_initial(prompt, (initial, ""))
+    };
+    match result {
+        Ok(line) => Ok(line),
+        Err(ReadlineError::Interrupted) => Err(eyre!("entrada cancelada (Ctrl-C)")),
+        Err(ReadlineError::Eof) => Err(eyre!("entrada encerrada (Ctrl-D)")),
+        Err(err) => Err(eyre!(err)),
+    }
+}
+
 fn prompt_bool(
     step: usize,
     total: usize,
@@ -1473,14 +1496,11 @@ fn prompt_bool(
         "{}",
         format_prompt_meta_line("Atual", &format_permission_value(default))
     );
-    print!(
-        "{}",
+    let prompt = format!(
+        "{} ",
         format_prompt_input(&format!("Resposta {default_suffix}:"))
     );
-    io::stdout().flush()?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
+    let input = read_line_edit(&prompt, "")?;
     let answer = input.trim().to_ascii_lowercase();
 
     match answer.as_str() {
@@ -1508,13 +1528,17 @@ fn prompt_command_list(
     println!("{}", format_prompt_meta_line("Atual", &current_label));
     println!(
         "{}",
-        format_prompt_hint("Enter vazio mantem o valor atual. '-' limpa a lista.")
+        format_prompt_hint(
+            "Edite a lista (setas, Home/End funcionam). Enter vazio mantem o valor atual. '-' limpa a lista."
+        )
     );
-    print!("{}", format_prompt_input("Lista:"));
-    io::stdout().flush()?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
+    let prompt = format!("{} ", format_prompt_input("Lista:"));
+    let initial = if current.is_empty() {
+        String::new()
+    } else {
+        current.join(", ")
+    };
+    let input = read_line_edit(&prompt, &initial)?;
     let trimmed = input.trim();
 
     if trimmed == "-" {
