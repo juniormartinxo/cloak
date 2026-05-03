@@ -26,8 +26,6 @@ Cargo.lock
 
 start.md
 /.cloak
-/AGENTS.md
-/CLAUDE.md
 .claude/*
 .gitnexus
 .codex
