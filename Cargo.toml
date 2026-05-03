@@ -17,6 +17,7 @@ color-eyre = "0.6"
 owo-colors = "4"
 which = "8"
 comfy-table = "7"
+rustyline = { version = "14", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
