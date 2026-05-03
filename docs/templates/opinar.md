@@ -55,8 +55,8 @@ Para cada item, decida nesta ordem:
 - Use `nada a acrescentar` para apontamentos corretos mas inacionaveis, confirmacoes, observacoes ja atendidas ou itens neutros, desde que nao haja correcao, documentacao ou decisao pendente.
 - Se o apontamento for vago ou faltar contexto para classificar, peca esclarecimento antes de opinar; nao classifique no escuro.
 - Toda opiniao termina com a linha de compensacao definida em "Formato Obrigatorio".
-- Calibracao anti-vies: se ao final da rodada mais de 70% dos itens tiverem acao `corrigir` (independente da opiniao: `concordo`, `concordo parcialmente` ou `discordo`), releia. Provavelmente voce esta tratando tudo como correcao por inercia. Reabra os itens mais fracos e teste se sustentam evidencia verificavel.
-- Encerramento de rodada: se voce so encontrar ajustes marginais sem evidencia verificavel ou sem valor operacional (reescrita estetica, preferencia pessoal, comentario sobre o proprio output), declare a rodada encerrada com a linha `Nada a acrescentar nesta rodada.` em vez de produzir itens marginais. Achados de `polimento` legitimos (renomeacao, mensagem de erro, formatacao) com evidencia concreta continuam validos como `[... | corrigir | polimento]` e nao caem nessa regra.
+- Calibracao anti-vies: em rodadas com pelo menos quatro itens, se mais de 70% deles tiverem acao `corrigir` (independente da opiniao: `concordo`, `concordo parcialmente` ou `discordo`), releia. Provavelmente voce esta tratando tudo como correcao por inercia. Reabra os itens mais fracos e teste se sustentam evidencia verificavel. Em rodadas curtas (1 a 3 itens) a regra nao se aplica para evitar falso alerta.
+- Encerramento de rodada: se voce so encontrar ajustes marginais sem evidencia verificavel ou sem valor operacional (reescrita estetica, preferencia pessoal, comentario sobre o proprio output), responda apenas com a linha `Nada a acrescentar nesta rodada.` no lugar da lista numerada. Essa linha substitui o "Formato Obrigatorio" inteiro: nao produza itens, classificacao ou linha de compensacao. Achados de `polimento` legitimos (renomeacao, mensagem de erro, formatacao) com evidencia concreta continuam validos como `[... | corrigir | polimento]` e nao caem nessa regra.
 
 ## Formato Obrigatorio
 
@@ -71,7 +71,7 @@ Para cada item, decida nesta ordem:
   - `relevante`: bug funcional fora de fluxo critico, lacuna de teste em comportamento exposto, debito que multiplica em manutencao.
   - `polimento`: mensagem de erro, naming, organizacao, comentario, formatacao.
 - Depois da classificacao, explique em poucas frases por que a classificacao foi escolhida.
-- Cite a evidencia concreta que sustenta a classificacao: caminho do arquivo + intervalo de linhas, nome do simbolo, nome do teste, trecho do contrato ou comportamento observado. Se a evidencia nao puder ser verificada, nao classifique o item; aplique a regra de "peca esclarecimento antes de opinar" definida em "Regras Anti-Ambiguidade".
+- Cite uma evidencia concreta que sustenta a classificacao, escolhendo o formato mais apropriado para o caso: caminho do arquivo + intervalo de linhas, nome de simbolo, nome de teste, trecho de contrato, comando reproduzivel, saida de teste ou execucao, schema, comportamento observado, ou ausencia de simbolo/arquivo onde o apontamento o esperaria. Se nenhuma evidencia puder ser verificada, nao classifique o item; aplique a regra de "peca esclarecimento antes de opinar" definida em "Regras Anti-Ambiguidade".
 - A opiniao responde apenas aos apontamentos recebidos. Achados proprios fora desse escopo nao entram na lista numerada; vao em uma secao opcional `## Fora Do Escopo` ao final, com no maximo tres bullets, sem classificacao.
 - Separe a explicacao da linha de compensacao com uma linha em branco.
 - Termine cada item com a linha de compensacao que corresponde a acao:
