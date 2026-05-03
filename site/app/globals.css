@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@theme {
+  --color-cloak-ink: oklch(12% 0.012 25);
+  --color-cloak-bg: oklch(15% 0.014 25);
+  --color-cloak-stage: oklch(18% 0.04 25);
+  --color-cloak-paper: oklch(94% 0.012 67);
+  --color-cloak-shell: oklch(94% 0.012 67);
+  --color-cloak-panel: oklch(88% 0.014 67);
+  --color-cloak-card: oklch(91% 0.012 67);
+  --color-cloak-line: oklch(65% 0.04 27);
+  --color-cloak-text: oklch(12% 0.012 25);
+  --color-cloak-soft: oklch(26% 0.014 25);
+  --color-cloak-muted: oklch(43% 0.018 25);
+  --color-cloak-red: oklch(55% 0.21 27);
+  --color-cloak-red-dark: oklch(38% 0.15 27);
+  --color-cloak-ember: oklch(55% 0.21 27);
+  --color-cloak-ember-soft: oklch(55% 0.21 27);
+  --color-cloak-green: oklch(74% 0.12 205);
+  --color-cloak-blue: oklch(74% 0.12 205);
+  --font-sans: Arial, Helvetica, sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
