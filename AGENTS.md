@@ -59,10 +59,14 @@ Para mudanças só em documentação, não rode a suíte Rust inteira por obriga
 - Não copie documentação existente nem adicione visão geral extensa de diretórios; use `docs/`, `rg --files`, GitNexus ou leitura dirigida quando precisar de detalhes.
 - Quando um erro recorrente exigir contexto novo, adicione a menor regra que teria prevenido o erro.
 
+## Restrições de Comandos
+
+- Quando o prompt iniciar com `OPINE`, use o template `docs/templates/opinar.md`: apenas opine sobre o conteúdo, não implemente.
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **cloak** (1178 symbols, 2694 relationships, 103 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **cloak** (1208 symbols, 2736 relationships, 106 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
