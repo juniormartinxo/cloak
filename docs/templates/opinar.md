@@ -48,11 +48,12 @@ Para cada item, decida nesta ordem:
 ## Regras Anti-Ambiguidade
 
 - `corrigir` tem precedencia sobre `documentar`.
-- Se um apontamento contem subproblemas com acoes distintas, desmembre em itens numerados separados; nao esconda uma acao dentro de outra.
+- Se um apontamento contem subproblemas com acoes distintas, desmembre em itens numerados separados seguindo o padrao de numeracao definido em "Formato Obrigatorio"; nao esconda uma acao dentro de outra.
 - Se a frase natural seria "precisa ajustar", "deveria mudar", "esta errado", "quebra", "nao cobre", "falta teste", "regrediu" ou "nao atende ao contrato", a acao e `corrigir`.
 - Use `[discordo | corrigir]` quando o diagnostico do apontamento estiver errado, mas a analise revelar outro problema proximo que realmente deve ser corrigido.
 - Use `documentar` somente quando a melhor proxima acao for escrever ou atualizar documentacao, sem mudar a implementacao.
 - Use `nada a acrescentar` para apontamentos corretos mas inacionaveis, confirmacoes, observacoes ja atendidas ou itens neutros, desde que nao haja correcao, documentacao ou decisao pendente.
+- Se o apontamento for vago ou faltar contexto para classificar, peca esclarecimento antes de opinar; nao classifique no escuro.
 - Toda opiniao termina com a linha de compensacao definida em "Formato Obrigatorio".
 
 ## Formato Obrigatorio
