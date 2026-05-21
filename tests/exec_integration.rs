@@ -1200,6 +1200,79 @@ mod unix_exec_tests {
     }
 
     #[test]
+    fn doctor_reports_codex_profile_hygiene_issues() {
+        let tmp = tempdir().expect("tempdir");
+        let bin_dir = tmp.path().join("bin");
+        let home_dir = tmp.path().join("home");
+        let xdg_config_home = tmp.path().join("xdg");
+        let codex_dir = xdg_config_home
+            .join("cloak")
+            .join("profiles")
+            .join("work")
+            .join("codex");
+
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+        fs::create_dir_all(&home_dir).expect("create home dir");
+        fs::create_dir_all(&codex_dir).expect("create codex dir");
+
+        let mock_binary = create_mock_binary(&bin_dir);
+        write_config(&xdg_config_home, &mock_binary, "work");
+        fs::write(codex_dir.join("auth.json"), "{}").expect("write auth hint");
+        fs::write(codex_dir.join("config.toml.gitnexus-backup"), "").expect("write backup");
+
+        let codex_config = format!(
+            r#"
+[projects."{}"]
+trust_level = "trusted"
+
+[projects."/tmp/cloak-stale-profile"]
+trust_level = "trusted"
+
+[features]
+js_repl = true
+"#,
+            home_dir.display()
+        );
+        fs::write(codex_dir.join("config.toml"), codex_config).expect("write codex config");
+
+        let output = Command::new(cloak_bin())
+            .arg("doctor")
+            .env("HOME", &home_dir)
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .output()
+            .expect("run cloak doctor");
+
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("Codex Profile Hygiene"),
+            "missing hygiene section:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("trusted project is home directory"),
+            "missing home trust warning:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("trusted project is under temp directory"),
+            "missing temp trust warning:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("removed Codex feature flag js_repl"),
+            "missing removed feature warning:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("stale Codex config backup file"),
+            "missing backup warning:\n{stdout}"
+        );
+    }
+
+    #[test]
     fn mcp_install_codex_uses_codex_native_args_and_profile_home() {
         let tmp = tempdir().expect("tempdir");
         let bin_dir = tmp.path().join("bin");
