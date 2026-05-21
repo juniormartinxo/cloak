@@ -471,7 +471,10 @@ fn run_mcp_add(cfg: &config::Config, params: AddMcpParams<'_>) -> Result<()> {
             };
 
             match result {
-                Ok(()) => print_detail_line("Result", "installed"),
+                Ok(mcp::McpInstallOutcome::Installed) => print_detail_line("Result", "installed"),
+                Ok(mcp::McpInstallOutcome::AlreadyExists) => {
+                    print_detail_line("Result", "already installed (skipped)")
+                }
                 Err(err) => {
                     print_detail_line("Result", "failed");
                     print_detail_line("Error", &err.to_string());
@@ -1127,7 +1130,10 @@ fn install_mcp(cfg: &config::Config, params: InstallMcpParams<'_>) -> Result<()>
         };
 
         match result {
-            Ok(()) => print_detail_line("Result", "installed"),
+            Ok(mcp::McpInstallOutcome::Installed) => print_detail_line("Result", "installed"),
+            Ok(mcp::McpInstallOutcome::AlreadyExists) => {
+                print_detail_line("Result", "already installed (skipped)")
+            }
             Err(err) => {
                 print_detail_line("Result", "failed");
                 print_detail_line("Error", &err.to_string());
