@@ -280,8 +280,9 @@ fn probe_stdio(
     };
 
     let stderr_buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-    if let Some(stderr) = child.stderr.take() {
+    let stderr_done = child.stderr.take().map(|stderr| {
         let buf = Arc::clone(&stderr_buf);
+        let (done_tx, done_rx) = mpsc::channel();
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(|l| l.ok()) {
@@ -298,8 +299,10 @@ fn probe_stdio(
                     guard.truncate(STDERR_CAPTURE_LIMIT);
                 }
             }
+            let _ = done_tx.send(());
         });
-    }
+        done_rx
+    });
 
     let stdout = match child.stdout.take() {
         Some(s) => s,
@@ -307,7 +310,7 @@ fn probe_stdio(
             let _ = child.kill();
             return ProbeOutcome::Failed {
                 reason: "no stdout pipe".into(),
-                stderr: drain_stderr(&stderr_buf),
+                stderr: drain_stderr(&stderr_buf, stderr_done.as_ref()),
             };
         }
     };
@@ -327,7 +330,7 @@ fn probe_stdio(
             let _ = child.kill();
             return ProbeOutcome::Failed {
                 reason: "no stdin pipe".into(),
-                stderr: drain_stderr(&stderr_buf),
+                stderr: drain_stderr(&stderr_buf, stderr_done.as_ref()),
             };
         }
     };
@@ -336,7 +339,7 @@ fn probe_stdio(
         let _ = child.kill();
         return ProbeOutcome::Failed {
             reason: format!("failed writing initialize: {err}"),
-            stderr: drain_stderr(&stderr_buf),
+            stderr: drain_stderr(&stderr_buf, stderr_done.as_ref()),
         };
     }
     let _ = stdin.flush();
@@ -347,7 +350,7 @@ fn probe_stdio(
             let _ = child.kill();
             return ProbeOutcome::Failed {
                 reason,
-                stderr: drain_stderr(&stderr_buf),
+                stderr: drain_stderr(&stderr_buf, stderr_done.as_ref()),
             };
         }
     };
@@ -361,7 +364,7 @@ fn probe_stdio(
                     "non-JSON initialize response: {}",
                     truncate_char_boundary(&init_line, LINE_TRUNCATE)
                 ),
-                stderr: drain_stderr(&stderr_buf),
+                stderr: drain_stderr(&stderr_buf, stderr_done.as_ref()),
             };
         }
     };
@@ -370,7 +373,7 @@ fn probe_stdio(
         let _ = child.kill();
         return ProbeOutcome::Failed {
             reason: format!("initialize returned error: {err}"),
-            stderr: drain_stderr(&stderr_buf),
+            stderr: drain_stderr(&stderr_buf, stderr_done.as_ref()),
         };
     }
 
@@ -452,7 +455,14 @@ fn read_json_with_id(
     }
 }
 
-fn drain_stderr(buf: &Arc<Mutex<String>>) -> Option<String> {
+fn drain_stderr(
+    buf: &Arc<Mutex<String>>,
+    stderr_done: Option<&mpsc::Receiver<()>>,
+) -> Option<String> {
+    if let Some(done) = stderr_done {
+        let _ = done.recv_timeout(Duration::from_millis(25));
+    }
+
     let guard = buf.lock().ok()?;
     let trimmed = guard.trim().to_string();
     if trimmed.is_empty() {
