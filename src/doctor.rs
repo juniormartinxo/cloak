@@ -27,6 +27,14 @@ struct ProfileSummary {
     credentials_missing: usize,
 }
 
+struct CodexProfileIssue {
+    profile: String,
+    file: String,
+    severity: &'static str,
+    issue: &'static str,
+    suggested_action: &'static str,
+}
+
 pub fn run_doctor(config: &Config, config_path: &Path, config_created: bool) -> Result<()> {
     println!("{}", format_main_heading("Doctor"));
     if config_created {
@@ -73,6 +81,13 @@ pub fn run_doctor(config: &Config, config_path: &Path, config_created: bool) -> 
     println!();
     println!("{}", format_section_title("Profiles"));
     print_profiles_table(config)?;
+
+    let codex_issues = collect_codex_profile_issues()?;
+    if !codex_issues.is_empty() {
+        println!();
+        println!("{}", format_section_title("Codex Profile Hygiene"));
+        print_codex_profile_issues(&codex_issues);
+    }
 
     Ok(())
 }
@@ -331,6 +346,184 @@ fn gemini_credentials_hint(cli_dir: &Path) -> Result<bool> {
     }
 
     Ok(false)
+}
+
+fn collect_codex_profile_issues() -> Result<Vec<CodexProfileIssue>> {
+    let profiles_root = paths::profiles_dir()?;
+    if !profiles_root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut issues = Vec::new();
+    let mut profile_dirs = collect_dirs(&profiles_root)?;
+    profile_dirs.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+    for profile_dir in profile_dirs {
+        let profile_name = profile_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("<invalid>")
+            .to_string();
+        let codex_dir = profile_dir.join("codex");
+        if !codex_dir.exists() {
+            continue;
+        }
+
+        let config_path = codex_dir.join("config.toml");
+        if config_path.exists() {
+            collect_codex_config_issues(&profile_name, &config_path, &mut issues)?;
+        }
+        collect_codex_backup_issues(&profile_name, &codex_dir, &mut issues)?;
+    }
+
+    Ok(issues)
+}
+
+fn collect_codex_config_issues(
+    profile_name: &str,
+    config_path: &Path,
+    issues: &mut Vec<CodexProfileIssue>,
+) -> Result<()> {
+    let raw = fs::read_to_string(config_path)
+        .wrap_err_with(|| format!("failed reading {}", config_path.display()))?;
+    let parsed: toml::Value = match toml::from_str(&raw) {
+        Ok(value) => value,
+        Err(_) => {
+            issues.push(CodexProfileIssue {
+                profile: profile_name.to_string(),
+                file: "config.toml".to_string(),
+                severity: "warning",
+                issue: "invalid Codex config TOML",
+                suggested_action: "inspect config.toml manually",
+            });
+            return Ok(());
+        }
+    };
+
+    collect_codex_trusted_project_issues(profile_name, &parsed, issues);
+    collect_codex_removed_feature_issues(profile_name, &parsed, issues);
+    Ok(())
+}
+
+fn collect_codex_trusted_project_issues(
+    profile_name: &str,
+    parsed: &toml::Value,
+    issues: &mut Vec<CodexProfileIssue>,
+) {
+    let Some(projects) = parsed.get("projects").and_then(toml::Value::as_table) else {
+        return;
+    };
+
+    let home_dir = dirs::home_dir();
+    let temp_dir = std::env::temp_dir();
+
+    for (project_path, raw) in projects {
+        let trust_level = raw
+            .as_table()
+            .and_then(|table| table.get("trust_level"))
+            .and_then(toml::Value::as_str);
+        if trust_level != Some("trusted") {
+            continue;
+        }
+
+        let path = Path::new(project_path);
+        if home_dir.as_deref() == Some(path) {
+            issues.push(CodexProfileIssue {
+                profile: profile_name.to_string(),
+                file: "config.toml".to_string(),
+                severity: "warning",
+                issue: "trusted project is home directory",
+                suggested_action: "remove this project entry",
+            });
+        } else if path.starts_with(&temp_dir) {
+            issues.push(CodexProfileIssue {
+                profile: profile_name.to_string(),
+                file: "config.toml".to_string(),
+                severity: "warning",
+                issue: "trusted project is under temp directory",
+                suggested_action: "remove stale temp entry",
+            });
+        }
+    }
+}
+
+fn collect_codex_removed_feature_issues(
+    profile_name: &str,
+    parsed: &toml::Value,
+    issues: &mut Vec<CodexProfileIssue>,
+) {
+    let js_repl_enabled = parsed
+        .get("features")
+        .and_then(toml::Value::as_table)
+        .and_then(|features| features.get("js_repl"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(false);
+
+    if js_repl_enabled {
+        issues.push(CodexProfileIssue {
+            profile: profile_name.to_string(),
+            file: "config.toml".to_string(),
+            severity: "info",
+            issue: "removed Codex feature flag js_repl",
+            suggested_action: "remove features.js_repl",
+        });
+    }
+}
+
+fn collect_codex_backup_issues(
+    profile_name: &str,
+    codex_dir: &Path,
+    issues: &mut Vec<CodexProfileIssue>,
+) -> Result<()> {
+    for entry in fs::read_dir(codex_dir)
+        .wrap_err_with(|| format!("failed reading {}", codex_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if is_stale_codex_config_backup(file_name) {
+            issues.push(CodexProfileIssue {
+                profile: profile_name.to_string(),
+                file: file_name.to_string(),
+                severity: "info",
+                issue: "stale Codex config backup file",
+                suggested_action: "archive or delete manually",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn is_stale_codex_config_backup(file_name: &str) -> bool {
+    file_name.starts_with("config.toml.")
+        || matches!(file_name, "config.toml.bak" | "config.toml.old")
+}
+
+fn print_codex_profile_issues(issues: &[CodexProfileIssue]) {
+    let mut table = new_ui_table(vec![
+        "Profile",
+        "File",
+        "Severity",
+        "Issue",
+        "Suggested action",
+    ]);
+
+    for issue in issues {
+        table.add_row(vec![
+            Cell::new(&issue.profile),
+            Cell::new(&issue.file),
+            Cell::new(issue.severity),
+            Cell::new(issue.issue),
+            Cell::new(issue.suggested_action),
+        ]);
+    }
+
+    println!("{table}");
 }
 
 fn collect_dirs(path: &Path) -> Result<Vec<PathBuf>> {
