@@ -1,6 +1,19 @@
+use std::io::Write;
+use std::process::{Command, Stdio};
+
 use color_eyre::eyre::{eyre, Result};
 
 use crate::{cli::McpTransport, config::Config, exec};
+
+/// Result of a successful MCP install invocation.
+///
+/// `AlreadyExists` is returned when the underlying CLI reports the server is
+/// already registered. The install is treated as idempotent in that case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpInstallOutcome {
+    Installed,
+    AlreadyExists,
+}
 
 #[derive(Debug)]
 pub struct McpInstallRequest<'a> {
@@ -18,29 +31,12 @@ pub fn install_for_profile(
     request: &McpInstallRequest<'_>,
     profile: &str,
     config: &Config,
-) -> Result<()> {
+) -> Result<McpInstallOutcome> {
     let args = build_install_args(request)?;
     let mut cmd = exec::prepare_cli_command(request.cli_name, profile, config)?;
     cmd.args(&args);
 
-    let status = cmd.status().map_err(|err| {
-        eyre!(
-            "failed running '{}' MCP install for profile '{}': {}",
-            request.cli_name,
-            profile,
-            err
-        )
-    })?;
-
-    if status.success() {
-        return Ok(());
-    }
-
-    Err(eyre!(
-        "MCP install failed for CLI '{}' in profile '{}'",
-        request.cli_name,
-        profile
-    ))
+    run_install_command(cmd, request.cli_name, profile)
 }
 
 pub fn raw_install_for_profile(
@@ -49,7 +45,7 @@ pub fn raw_install_for_profile(
     command: &[String],
     profile: &str,
     config: &Config,
-) -> Result<()> {
+) -> Result<McpInstallOutcome> {
     if command.is_empty() {
         return Err(eyre!("raw MCP installs require a command after `--`"));
     }
@@ -58,25 +54,83 @@ pub fn raw_install_for_profile(
         exec::prepare_raw_command_with_profile_env(cli_name, profile, &command[0], config)?;
     cmd.args(&command[1..]);
 
-    let status = cmd.status().map_err(|err| {
+    run_install_command(cmd, cli_name, profile).map_err(|err| {
         eyre!(
-            "failed running raw MCP install '{}' for profile '{}': {}",
+            "raw MCP install '{}' failed for CLI '{}' in profile '{}': {}",
             server_name,
+            cli_name,
+            profile,
+            err
+        )
+    })
+}
+
+/// Runs an MCP install command and classifies the outcome.
+///
+/// stdout is inherited so the underlying CLI's progress remains visible; stderr
+/// is captured to detect the "already exists" idempotency case. On real failure
+/// the captured stderr is forwarded to the user so nothing is silently dropped.
+fn run_install_command(
+    mut cmd: Command,
+    cli_name: &str,
+    profile: &str,
+) -> Result<McpInstallOutcome> {
+    cmd.stdout(Stdio::inherit());
+    cmd.stderr(Stdio::piped());
+
+    let child = cmd.spawn().map_err(|err| {
+        eyre!(
+            "failed running '{}' MCP install for profile '{}': {}",
+            cli_name,
             profile,
             err
         )
     })?;
 
-    if status.success() {
-        return Ok(());
+    let output = child.wait_with_output().map_err(|err| {
+        eyre!(
+            "failed waiting for '{}' MCP install for profile '{}': {}",
+            cli_name,
+            profile,
+            err
+        )
+    })?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if output.status.success() {
+        // Forward stderr (warnings, info) to the user as the underlying CLI would have.
+        forward_stderr(&stderr);
+        return Ok(McpInstallOutcome::Installed);
     }
 
+    if stderr_indicates_already_exists(&stderr) {
+        return Ok(McpInstallOutcome::AlreadyExists);
+    }
+
+    forward_stderr(&stderr);
     Err(eyre!(
-        "raw MCP install '{}' failed for CLI '{}' in profile '{}'",
-        server_name,
+        "MCP install failed for CLI '{}' in profile '{}'",
         cli_name,
         profile
     ))
+}
+
+fn forward_stderr(stderr: &str) {
+    if stderr.is_empty() {
+        return;
+    }
+    let mut handle = std::io::stderr().lock();
+    let _ = handle.write_all(stderr.as_bytes());
+    let _ = handle.flush();
+}
+
+/// Returns true when the CLI's stderr signals the server is already registered.
+/// Matches the messages emitted by `claude mcp add` and `codex mcp add` when
+/// re-installing an existing server.
+pub fn stderr_indicates_already_exists(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("already exists")
 }
 
 pub fn remove_for_profile(
@@ -288,7 +342,38 @@ fn build_claude_install_args(request: &McpInstallRequest<'_>) -> Result<Vec<Stri
 mod tests {
     use crate::cli::McpTransport;
 
-    use super::{build_install_args, build_remove_args, McpInstallRequest};
+    use super::{
+        build_install_args, build_remove_args, stderr_indicates_already_exists, McpInstallRequest,
+    };
+
+    #[test]
+    fn detects_claude_already_exists_message() {
+        let stderr = "MCP server gitnexus already exists in user config\n";
+        assert!(stderr_indicates_already_exists(stderr));
+    }
+
+    #[test]
+    fn detects_codex_already_exists_message() {
+        let stderr = "Error: server `gitnexus` already exists\n";
+        assert!(stderr_indicates_already_exists(stderr));
+    }
+
+    #[test]
+    fn detects_already_exists_case_insensitively() {
+        let stderr = "Server ALREADY EXISTS in user config\n";
+        assert!(stderr_indicates_already_exists(stderr));
+    }
+
+    #[test]
+    fn does_not_match_unrelated_errors() {
+        let stderr = "Error: invalid transport\n";
+        assert!(!stderr_indicates_already_exists(stderr));
+    }
+
+    #[test]
+    fn empty_stderr_does_not_match() {
+        assert!(!stderr_indicates_already_exists(""));
+    }
 
     #[test]
     fn remove_args_for_codex_are_plain() {
