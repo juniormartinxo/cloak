@@ -572,6 +572,7 @@ mod tests {
                 },
             )]),
             agents: HashMap::new(),
+            backup: None,
         };
 
         let err = super::prepare_cli_command("cursor", "work", &cfg).expect_err("must fail");

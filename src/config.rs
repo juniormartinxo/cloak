@@ -19,6 +19,8 @@ pub struct Config {
     pub cli: HashMap<String, CliConfig>,
     #[serde(default)]
     pub agents: HashMap<String, AgentPermissions>,
+    #[serde(default)]
+    pub backup: Option<BackupConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +72,16 @@ impl Default for AgentPermissions {
             deny_commands: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BackupConfig {
+    #[serde(default)]
+    pub output_dir: Option<String>,
+    #[serde(default)]
+    pub upload_command: Option<String>,
+    #[serde(default)]
+    pub include: Vec<String>,
 }
 
 fn default_permission_true() -> bool {
@@ -585,5 +597,37 @@ config_dir_env = "CODEX_HOME"
             err.to_string().contains("path separators"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn test_parse_config_reads_backup_block() {
+        let raw = r#"
+[general]
+default_profile = "personal"
+
+[cli.claude]
+binary = "claude"
+config_dir_env = "CLAUDE_CONFIG_DIR"
+
+[backup]
+output_dir = "/tmp/cloak-backups"
+upload_command = "rclone copy {archive} gdrive:cloak/"
+include = ["extra/*.json"]
+"#;
+        let parsed = parse_config_str(raw, Path::new("config.toml")).expect("parse");
+        let backup = parsed.backup.expect("backup block present");
+        assert_eq!(backup.output_dir.as_deref(), Some("/tmp/cloak-backups"));
+        assert_eq!(
+            backup.upload_command.as_deref(),
+            Some("rclone copy {archive} gdrive:cloak/")
+        );
+        assert_eq!(backup.include, vec!["extra/*.json".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_config_without_backup_block_is_none() {
+        let parsed = parse_config_str(DEFAULT_CONFIG_TOML, Path::new("config.toml"))
+            .expect("default parses");
+        assert!(parsed.backup.is_none());
     }
 }

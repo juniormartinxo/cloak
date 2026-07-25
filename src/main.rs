@@ -3081,6 +3081,7 @@ mod tests {
             },
             cli: cli_map,
             agents: std::collections::HashMap::new(),
+            backup: None,
         };
 
         let result = provision_default_claude_statusline(&profile_dir, &cfg).expect("provision");
@@ -3129,6 +3130,7 @@ mod tests {
             },
             cli: cli_map,
             agents: std::collections::HashMap::new(),
+            backup: None,
         };
 
         let result = provision_default_claude_statusline(&profile_dir, &cfg).expect("provision");
@@ -3170,6 +3172,7 @@ mod tests {
             },
             cli: cli_map,
             agents: std::collections::HashMap::new(),
+            backup: None,
         };
 
         let result = provision_default_claude_statusline(&profile_dir, &cfg).expect("provision");
@@ -3218,6 +3221,7 @@ mod tests {
             },
             cli: cli_map,
             agents,
+            backup: None,
         };
 
         let result = provision_default_claude_statusline(&profile_dir, &cfg).expect("provision");
@@ -3297,6 +3301,7 @@ mod tests {
             },
             cli: cli_map,
             agents,
+            backup: None,
         };
 
         let result = provision_default_claude_statusline(&profile_dir, &cfg).expect("provision");
