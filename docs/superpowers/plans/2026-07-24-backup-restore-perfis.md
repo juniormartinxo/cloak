@@ -11,7 +11,8 @@
 ## Global Constraints
 
 - Rust 2021, toolchain `1.93.1`; preservar compatibilidade com o fluxo atual de `cargo`.
-- **Nenhuma dependência nova** em `Cargo.toml` (`tempfile` já existe em `dev-dependencies`).
+- **Nenhuma dependência nova** em `Cargo.toml`. Exceção única e já aprovada: mover `tempfile` de `[dev-dependencies]` para `[dependencies]` (Task 0), porque `run_backup`, `run_restore` e `gpg_can_encrypt` precisam de diretório temporário em código de produção. Nenhuma outra alteração de dependência é permitida.
+- **Testes não podem mutar env vars globais** (`std::env::set_var`) para controlar caminhos: os testes unitários rodam em paralelo na mesma process e `XDG_CONFIG_HOME` compartilhado gera flake. Funções que dependem da raiz de configuração recebem essa raiz por parâmetro (variante `*_at(root, ...)`), com um wrapper fino que resolve via `paths::`. Os testes exercitam a variante `_at`.
 - Sem `unwrap`, `expect` ou `panic!` em fluxo de usuário; propagar com `color-eyre` e contexto explícito via `.wrap_err(...)`.
 - Permissões Unix: `0700` para diretórios criados, `0600` para arquivos criados — usar `paths::ensure_secure_dir` e `paths::set_owner_only_file`.
 - Não alterar nomes de subcomandos, variáveis de ambiente ou layout de perfis existentes.
@@ -25,6 +26,7 @@
 
 | Arquivo | Responsabilidade | Ação |
 |---|---|---|
+| `Cargo.toml` | Mover `tempfile` para `[dependencies]` | Modificar |
 | `src/backup.rs` | Manifesto, allowlist, empacotamento, gpg, backup e restore | Criar |
 | `src/cli.rs` | Subcomandos `Backup` e `Restore` (clap) | Modificar |
 | `src/config.rs` | Struct `BackupConfig` e campo `backup` no `Config` | Modificar |
@@ -85,6 +87,60 @@ fn resolve_passphrase() -> Option<String>;   // lê env CLOAK_BACKUP_PASSPHRASE
 ```
 
 **Convenção de passphrase (usada por gpg_encrypt/gpg_decrypt e pelos testes):** se a env `CLOAK_BACKUP_PASSPHRASE` estiver definida, o gpg roda em modo não-interativo (`--batch --pinentry-mode loopback --passphrase-fd 0`, passphrase via stdin); caso contrário, o gpg usa o pinentry interativo padrão. Os testes de integração sempre definem `CLOAK_BACKUP_PASSPHRASE`.
+
+---
+
+## Task 0: Mover `tempfile` para dependência de produção
+
+**Files:**
+- Modify: `Cargo.toml`
+
+**Interfaces:**
+- Produces: `tempfile` utilizável em código não-teste (`src/backup.rs`, `src/doctor.rs`).
+
+**Contexto:** `tempfile` está hoje em `[dev-dependencies]` e só é usado dentro de `#[cfg(test)]`. As Tasks 8, 9 e 10 precisam de diretório temporário 0700 em código de produção. Esta é a única alteração de dependência aprovada para este plano.
+
+- [ ] **Step 1: Mover a linha**
+
+Em `Cargo.toml`, remover `tempfile = "3"` de `[dev-dependencies]` e adicioná-la ao final de `[dependencies]`, mantendo a ordem existente das demais. O bloco `[dev-dependencies]` fica vazio — remover o cabeçalho se não restar nenhuma entrada.
+
+Resultado esperado do bloco:
+
+```toml
+[dependencies]
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+toml = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+color-eyre = "0.6"
+owo-colors = "4"
+which = "8"
+comfy-table = "7"
+rustyline = { version = "14", default-features = false }
+tempfile = "3"
+```
+
+- [ ] **Step 2: Verificar que tudo ainda compila e passa**
+
+Run: `cargo build 2>&1 | tail -5 && cargo test 2>&1 | tail -15`
+Expected: build OK; toda a suíte existente continua passando (os testes que já usavam `tempfile` seguem funcionando, agora via dependência normal).
+
+- [ ] **Step 3: Verificar que `Cargo.lock` não ganhou pacotes novos**
+
+Run: `git diff --stat Cargo.lock`
+Expected: `Cargo.lock` sem mudanças, ou apenas reordenação — nenhum pacote novo. `tempfile` já estava no lock.
+
+- [ ] **Step 4: Gates e commit**
+
+```bash
+cargo fmt
+cargo clippy --all-targets --all-features -- -D warnings
+git add Cargo.toml Cargo.lock
+git commit -m "build: move tempfile para dependencia de producao"
+```
 
 ---
 
@@ -310,8 +366,11 @@ No módulo de testes de `src/paths.rs`:
 ```rust
     #[test]
     fn test_backups_dir_is_under_cloak_config() {
-        std::env::set_var("XDG_CONFIG_HOME", "/tmp/xdg-cloak-test");
+        // Não mutar XDG_CONFIG_HOME: os testes rodam em paralelo na mesma
+        // process. A relação com cloak_config_dir vale para qualquer raiz.
         let dir = super::backups_dir().expect("backups dir");
+        let base = super::cloak_config_dir().expect("config dir");
+        assert_eq!(dir, base.join("backups"));
         assert!(dir.ends_with("cloak/backups"), "unexpected: {}", dir.display());
     }
 ```
@@ -596,7 +655,9 @@ git commit -m "feat(backup): allowlist de selecao e relatorio de nao-cobertos"
 
 **Interfaces:**
 - Consumes: `account::profile_email` (lê `/oauthAccount/emailAddress`), `config::Config`.
-- Produces: `struct Manifest`, `struct ProfileManifest`, `fn build_profile_manifest(profile: &str, cli_names: &[String], uncovered: Vec<UncoveredEntry>) -> ProfileManifest`, `fn read_mcp_servers(profile: &str) -> Vec<String>`.
+- Produces: `struct Manifest`, `struct ProfileManifest`, `fn build_profile_manifest(profile: &str, uncovered: Vec<UncoveredEntry>) -> ProfileManifest`, `fn read_mcp_servers_at(profile_root: &Path, profile: &str) -> Vec<String>` e o wrapper `fn read_mcp_servers(profile: &str) -> Vec<String>`.
+
+**Nota de design (constraint global):** a leitura recebe a raiz por parâmetro (`_at`) para que o teste não precise mutar `XDG_CONFIG_HOME`. O wrapper resolve a raiz via `paths::profiles_dir()` e é o que o resto do código chama.
 
 - [ ] **Step 1: Escrever o teste que falha**
 
@@ -604,12 +665,12 @@ Adicionar ao módulo de testes de `src/backup.rs`:
 
 ```rust
     #[test]
-    fn test_read_mcp_servers_from_claude_json() {
+    fn test_read_mcp_servers_at_reads_claude_json() {
+        // Sem set_var: a raiz entra por parâmetro, então o teste é puro
+        // e não corre com outros testes em paralelo.
         let tmp = tempdir().expect("tempdir");
-        std::env::set_var("XDG_CONFIG_HOME", tmp.path());
-        let claude_dir = tmp
-            .path()
-            .join("cloak/profiles/demo/claude");
+        let profile_root = tmp.path().join("profiles");
+        let claude_dir = profile_root.join("demo/claude");
         fs::create_dir_all(&claude_dir).expect("mkdir");
         fs::write(
             claude_dir.join(".claude.json"),
@@ -617,9 +678,16 @@ Adicionar ao módulo de testes de `src/backup.rs`:
         )
         .expect("write claude.json");
 
-        let mut servers = read_mcp_servers("demo");
+        let mut servers = read_mcp_servers_at(&profile_root, "demo");
         servers.sort();
         assert_eq!(servers, vec!["gitnexus".to_string(), "time".to_string()]);
+    }
+
+    #[test]
+    fn test_read_mcp_servers_at_missing_file_returns_empty() {
+        let tmp = tempdir().expect("tempdir");
+        let servers = read_mcp_servers_at(tmp.path(), "inexistente");
+        assert!(servers.is_empty());
     }
 
     #[test]
@@ -688,19 +756,27 @@ pub struct ProfileManifest {
     pub uncovered: Vec<UncoveredEntry>,
 }
 
-fn read_mcp_servers(profile: &str) -> Vec<String> {
+/// Lê os MCP registrados a partir de uma raiz de perfis explícita.
+/// A raiz entra por parâmetro para manter os testes livres de env global.
+fn read_mcp_servers_at(profile_root: &Path, profile: &str) -> Vec<String> {
     let mut servers = Vec::new();
-    if let Ok(claude_dir) = paths::profile_cli_dir(profile, "claude") {
-        let claude_json = claude_dir.join(".claude.json");
-        if let Ok(raw) = fs::read_to_string(&claude_json) {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
-                if let Some(map) = value.get("mcpServers").and_then(|v| v.as_object()) {
-                    servers.extend(map.keys().cloned());
-                }
+    let claude_json = profile_root.join(profile).join("claude").join(".claude.json");
+    if let Ok(raw) = fs::read_to_string(&claude_json) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(map) = value.get("mcpServers").and_then(|v| v.as_object()) {
+                servers.extend(map.keys().cloned());
             }
         }
     }
     servers
+}
+
+/// Wrapper que resolve a raiz padrão de perfis. É o ponto usado pelo resto do código.
+fn read_mcp_servers(profile: &str) -> Vec<String> {
+    match paths::profiles_dir() {
+        Ok(root) => read_mcp_servers_at(&root, profile),
+        Err(_) => Vec::new(),
+    }
 }
 
 fn build_profile_manifest(
