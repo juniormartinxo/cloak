@@ -548,8 +548,7 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
     };
     let manifest_json =
         serde_json::to_string_pretty(&manifest).wrap_err("failed serializing manifest")?;
-    fs::write(payload.join("manifest.json"), manifest_json)
-        .wrap_err("failed writing manifest")?;
+    fs::write(payload.join("manifest.json"), manifest_json).wrap_err("failed writing manifest")?;
 
     if opts.dry_run {
         println!("dry-run: nenhum artefato gerado");
