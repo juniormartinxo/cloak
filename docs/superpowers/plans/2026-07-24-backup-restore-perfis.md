@@ -489,6 +489,39 @@ mod tests {
 
         let unc: Vec<&str> = uncovered.iter().map(|u| u.path.as_str()).collect();
         assert!(unc.contains(&"mystery.bin"));
+        // Diretório totalmente descoberto vira uma linha só.
+        assert!(unc.contains(&"sessions"));
+    }
+
+    #[test]
+    fn test_collect_profile_entries_reports_uncovered_inside_partially_covered_dir() {
+        // Regressão: um diretório com MISTURA de arquivos cobertos e não
+        // cobertos não pode marcar o diretório inteiro como coberto — os
+        // arquivos de fora sumiriam do backup E do relatório.
+        let tmp = tempdir().expect("tempdir");
+        let cli_dir = tmp.path().join("claude");
+        fs::create_dir_all(cli_dir.join("plugins")).expect("mkdir plugins");
+        // Este casa com a allowlist de claude.
+        fs::write(cli_dir.join("plugins/installed_plugins.json"), "{}").expect("inst");
+        // Este NÃO casa com nada.
+        fs::write(cli_dir.join("plugins/secret_api_key.json"), "shh").expect("secret");
+
+        let (included, uncovered) =
+            collect_profile_entries(&cli_dir, "claude", &[]).expect("collect");
+
+        let inc: Vec<String> = included
+            .iter()
+            .map(|p| p.strip_prefix(&cli_dir).unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(inc.contains(&"plugins/installed_plugins.json".to_string()));
+        assert!(!inc.contains(&"plugins/secret_api_key.json".to_string()));
+
+        let unc: Vec<&str> = uncovered.iter().map(|u| u.path.as_str()).collect();
+        assert!(
+            unc.contains(&"plugins/secret_api_key.json"),
+            "arquivo nao coberto dentro de diretorio parcialmente coberto \
+             precisa aparecer no relatorio; obtido: {unc:?}"
+        );
     }
 }
 ```
@@ -604,25 +637,56 @@ fn collect_profile_entries(
         }
     }
 
-    // Entradas de topo não cobertas, para o relatório (dir vira uma linha só).
+    // Entradas não cobertas, para o relatório.
+    //
+    // CUIDADO: um diretório de topo NÃO pode ser considerado "coberto" só
+    // porque algum arquivo dentro dele entrou. Em `claude/plugins/`, por
+    // exemplo, três arquivos casam com a allowlist e qualquer outro arquivo
+    // ali não casa. Agregar por diretório com `.any()` faria esses arquivos
+    // sumirem em silêncio — nem no backup, nem no relatório —, destruindo a
+    // única garantia que torna a allowlist aceitável para backup.
+    //
+    // Regra: diretório totalmente descoberto vira UMA linha (com o tamanho
+    // agregado); diretório parcialmente coberto é percorrido e reporta os
+    // arquivos específicos que ficaram de fora.
+    let included_set: std::collections::HashSet<&Path> =
+        included.iter().map(|p| p.as_path()).collect();
+
     for entry in fs::read_dir(cli_dir)
         .wrap_err_with(|| format!("failed reading {}", cli_dir.display()))?
     {
         let entry = entry?;
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
-        let covered = if path.is_dir() {
-            included.iter().any(|inc| inc.starts_with(&path))
-        } else {
-            is_allowed(cli_name, Path::new(&name), extra)
-        };
-        if !covered {
-            let size = if path.is_dir() {
-                dir_size(&path)
+
+        if path.is_dir() {
+            let mut files = Vec::new();
+            walk_files(cli_dir, &path, &mut files)?;
+            let any_included = files.iter().any(|f| included_set.contains(f.as_path()));
+            if !any_included {
+                // Nada dentro entrou: uma linha só para o diretório inteiro.
+                uncovered.push(UncoveredEntry {
+                    path: name,
+                    size_bytes: dir_size(&path),
+                });
             } else {
-                path.metadata().map(|m| m.len()).unwrap_or(0)
-            };
-            uncovered.push(UncoveredEntry { path: name, size_bytes: size });
+                // Cobertura parcial: reportar cada arquivo que ficou de fora.
+                for f in files {
+                    if included_set.contains(f.as_path()) {
+                        continue;
+                    }
+                    let rel = f.strip_prefix(cli_dir).unwrap_or(&f);
+                    uncovered.push(UncoveredEntry {
+                        path: rel.to_string_lossy().replace('\\', "/"),
+                        size_bytes: f.metadata().map(|m| m.len()).unwrap_or(0),
+                    });
+                }
+            }
+        } else if !is_allowed(cli_name, Path::new(&name), extra) {
+            uncovered.push(UncoveredEntry {
+                path: name,
+                size_bytes: path.metadata().map(|m| m.len()).unwrap_or(0),
+            });
         }
     }
     uncovered.sort_by(|a, b| a.path.cmp(&b.path));
