@@ -612,6 +612,41 @@ fn run_upload_command(template: &str, archive: &Path) -> Result<()> {
 
 const REWRITE_EXTENSIONS: &[&str] = &["json", "toml", "md", "sh"];
 
+/// Substitui `from` por `to` apenas quando `from` é uma raiz de caminho
+/// completa, não um prefixo de outro nome.
+///
+/// Um `replace` literal corromperia silenciosamente: com `from = "/home/ana"`,
+/// a string `/home/anastacia/x` viraria `/home/<novo>stacia/x`. Só tratamos
+/// como raiz quando o caractere seguinte encerra o componente — separador,
+/// aspas, fim da string ou espaço.
+fn replace_path_root(content: &str, from: &str, to: &str) -> String {
+    if from.is_empty() {
+        return content.to_string();
+    }
+
+    let mut out = String::with_capacity(content.len());
+    let mut rest = content;
+
+    while let Some(idx) = rest.find(from) {
+        let (before, tail) = rest.split_at(idx);
+        let after = &tail[from.len()..];
+        let boundary_ok = match after.chars().next() {
+            None => true,
+            Some(c) => matches!(c, '/' | '"' | '\'' | ' ' | '\\' | ':' | ',' | '\n' | '\r'),
+        };
+
+        out.push_str(before);
+        if boundary_ok {
+            out.push_str(to);
+        } else {
+            out.push_str(from);
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
 fn rewrite_paths_in_file(file: &Path, from: &str, to: &str) -> Result<bool> {
     let is_text = file
         .extension()
@@ -623,10 +658,10 @@ fn rewrite_paths_in_file(file: &Path, from: &str, to: &str) -> Result<bool> {
     }
     let content =
         fs::read_to_string(file).wrap_err_with(|| format!("failed reading {}", file.display()))?;
-    if !content.contains(from) {
+    let updated = replace_path_root(&content, from, to);
+    if updated == content {
         return Ok(false);
     }
-    let updated = content.replace(from, to);
     fs::write(file, updated).wrap_err_with(|| format!("failed writing {}", file.display()))?;
     Ok(true)
 }
@@ -782,11 +817,54 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
             continue;
         }
         let dest = paths::profile_dir(&pm.name)?;
+        // Levantado ANTES de copiar: depois da cópia, os arquivos do backup
+        // já existem no destino e não dá mais para distinguir o que era pré-existente.
+        let preserved = collect_preserved_files(&src, &dest)?;
         copy_tree_secure(&src, &dest)?;
         print_reconstruction_report(pm);
+        print_preserved_report(&pm.name, &preserved);
     }
 
     Ok(())
+}
+
+/// Arquivos que já existem no destino e NÃO vêm no artefato.
+///
+/// O restore é um merge: nada do destino é apagado. Isso evita destruir
+/// credenciais renovadas ou trabalho criado depois do backup, mas significa
+/// que o perfil resultante mistura estado antigo e novo. O usuário precisa
+/// saber disso — daí o relatório.
+fn collect_preserved_files(src: &Path, dest: &Path) -> Result<Vec<String>> {
+    let mut preserved = Vec::new();
+    if !dest.exists() {
+        return Ok(preserved);
+    }
+
+    let mut dest_files = Vec::new();
+    walk_files(dest, &mut dest_files)?;
+    for file in dest_files {
+        let Ok(rel) = file.strip_prefix(dest) else {
+            continue;
+        };
+        if !src.join(rel).exists() {
+            preserved.push(rel.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    preserved.sort();
+    Ok(preserved)
+}
+
+fn print_preserved_report(profile: &str, preserved: &[String]) {
+    if preserved.is_empty() {
+        return;
+    }
+    println!(
+        "    {} arquivo(s) já existiam no destino e NÃO estavam no backup — preservados:",
+        preserved.len()
+    );
+    for path in preserved {
+        println!("      {profile}/{path}");
+    }
 }
 
 fn copy_tree_secure(src: &Path, dest: &Path) -> Result<()> {
@@ -1082,6 +1160,53 @@ mod tests {
         fs::write(&file, r#"{"k":"/unrelated/path"}"#).expect("write");
         let changed = rewrite_paths_in_file(&file, "/home/old", "/home/new").expect("rewrite");
         assert!(!changed);
+    }
+
+    #[test]
+    fn test_replace_path_root_respects_component_boundary() {
+        // /home/ana nao pode casar dentro de /home/anastacia
+        let content = r#"{"a":"/home/ana/x","b":"/home/anastacia/y"}"#;
+        let out = replace_path_root(content, "/home/ana", "/home/bob");
+        assert!(out.contains(r#""/home/bob/x""#), "obtido: {out}");
+        assert!(
+            out.contains(r#""/home/anastacia/y""#),
+            "prefixo alheio corrompido: {out}"
+        );
+    }
+
+    #[test]
+    fn test_replace_path_root_handles_end_of_string() {
+        let out = replace_path_root("/home/ana", "/home/ana", "/home/bob");
+        assert_eq!(out, "/home/bob");
+    }
+
+    #[test]
+    fn test_rewrite_paths_in_file_does_not_corrupt_sibling_prefix() {
+        let tmp = tempdir().expect("tempdir");
+        let file = tmp.path().join("f.json");
+        fs::write(&file, r#"{"a":"/home/ana/x","b":"/home/anastacia/y"}"#).expect("write");
+        let changed = rewrite_paths_in_file(&file, "/home/ana", "/home/bob").expect("rewrite");
+        assert!(changed);
+        let content = fs::read_to_string(&file).expect("read");
+        assert!(content.contains("/home/bob/x"));
+        assert!(content.contains("/home/anastacia/y"), "obtido: {content}");
+    }
+
+    #[test]
+    fn test_collect_preserved_files_lists_only_files_absent_from_artifact() {
+        let tmp = tempdir().expect("tempdir");
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(src.join("claude")).expect("mkdir src");
+        fs::create_dir_all(dest.join("claude")).expect("mkdir dest");
+        // Existe nos dois: nao e' "preservado", vai ser sobrescrito.
+        fs::write(src.join("claude/settings.json"), "novo").expect("w1");
+        fs::write(dest.join("claude/settings.json"), "antigo").expect("w2");
+        // So no destino: preservado, precisa ser reportado.
+        fs::write(dest.join("claude/token-novo.json"), "x").expect("w3");
+
+        let preserved = collect_preserved_files(&src, &dest).expect("collect");
+        assert_eq!(preserved, vec!["claude/token-novo.json".to_string()]);
     }
 
     #[cfg(unix)]
