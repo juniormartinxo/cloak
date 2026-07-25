@@ -29,7 +29,7 @@ pub struct Manifest {
     pub cloak_version: String,
     pub created_at: String,
     pub hostname: String,
-    pub uid: u32,
+    pub uid: Option<u32>,
     pub home: String,
     pub profile_root: String,
     pub include_credentials: bool,
@@ -207,17 +207,23 @@ fn origin_hostname() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// Retorna `None` quando o uid não pôde ser determinado.
+///
+/// NÃO use `0` como fallback: `0` é o uid real do root, então uma leitura
+/// falha se tornaria indistinguível de "restaurando como root" e a checagem
+/// de identidade do restore passaria por engano (fail-open). `None` força o
+/// restore a tratar o caso como não-verificável (fail-safe).
 #[allow(dead_code)]
 #[cfg(unix)]
-fn origin_uid(home: &Path) -> u32 {
+fn origin_uid(home: &Path) -> Option<u32> {
     use std::os::unix::fs::MetadataExt;
-    fs::metadata(home).map(|m| m.uid()).unwrap_or(0)
+    fs::metadata(home).map(|m| m.uid()).ok()
 }
 
 #[allow(dead_code)]
 #[cfg(not(unix))]
-fn origin_uid(_home: &Path) -> u32 {
-    0
+fn origin_uid(_home: &Path) -> Option<u32> {
+    None
 }
 
 #[allow(dead_code)]
@@ -485,7 +491,7 @@ mod tests {
             cloak_version: "0.3.1".into(),
             created_at: "20260724-120000".into(),
             hostname: "host".into(),
-            uid: 1000,
+            uid: Some(1000),
             home: "/home/x".into(),
             profile_root: "/home/x/.config/cloak/profiles".into(),
             include_credentials: false,
@@ -500,6 +506,19 @@ mod tests {
         let back: Manifest = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.profiles[0].name, "demo");
         assert_eq!(back.profiles[0].oauth_account.as_deref(), Some("a@b.com"));
+    }
+
+    #[test]
+    fn test_origin_uid_returns_none_for_unreadable_path() {
+        // Caminho inexistente: nao pode virar Some(0), que colidiria com root.
+        let missing = Path::new("/definitivamente/nao/existe/cloak-test");
+        assert_eq!(origin_uid(missing), None);
+    }
+
+    #[test]
+    fn test_origin_uid_returns_some_for_real_path() {
+        let tmp = tempdir().expect("tempdir");
+        assert!(origin_uid(tmp.path()).is_some());
     }
 
     fn gpg_available() -> bool {
