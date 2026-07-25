@@ -18,6 +18,11 @@ pub fn profiles_dir() -> Result<PathBuf> {
     Ok(cloak_config_dir()?.join("profiles"))
 }
 
+#[allow(dead_code)]
+pub fn backups_dir() -> Result<PathBuf> {
+    Ok(cloak_config_dir()?.join("backups"))
+}
+
 pub fn profile_dir(profile: &str) -> Result<PathBuf> {
     validate_profile_name(profile)?;
     Ok(profiles_dir()?.join(profile))
@@ -246,5 +251,19 @@ mod tests {
         assert!(validate_cli_name("-claude").is_err());
         assert!(validate_cli_name("claude.beta").is_err());
         assert!(validate_cli_name("hello world").is_err());
+    }
+
+    #[test]
+    fn test_backups_dir_is_under_cloak_config() {
+        // Não mutar XDG_CONFIG_HOME: os testes rodam em paralelo na mesma
+        // process. A relação com cloak_config_dir vale para qualquer raiz.
+        let dir = super::backups_dir().expect("backups dir");
+        let base = super::cloak_config_dir().expect("config dir");
+        assert_eq!(dir, base.join("backups"));
+        assert!(
+            dir.ends_with("cloak/backups"),
+            "unexpected: {}",
+            dir.display()
+        );
     }
 }
