@@ -424,6 +424,23 @@ fn collect_uncovered(
     Ok(())
 }
 
+/// Lista as entradas que são ARQUIVO diretamente na raiz do diretório do
+/// perfil (não desce em subdiretórios — esses são as pastas por CLI, tratadas
+/// à parte por `collect_profile_entries`).
+fn collect_profile_root_files(profile_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(profile_dir)
+        .wrap_err_with(|| format!("failed reading {}", profile_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
+
 fn collect_profile_entries(
     cli_dir: &Path,
     cli_name: &str,
@@ -540,6 +557,35 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
         }
         let mut all_uncovered = Vec::new();
 
+        // Arquivos soltos na raiz do perfil (ex.: `.cloak`) ficam fora do laco
+        // de CLIs abaixo, que so trata diretorios. `.cloak` esta na allowlist
+        // da spec e precisa ser copiado; qualquer outro arquivo solto que nao
+        // case entra no relatorio de nao-cobertos, com o caminho relativo a
+        // raiz do perfil — sem isso, o relatorio podia afirmar cobertura total
+        // havendo arquivo de fora.
+        let root_files = collect_profile_root_files(&profile_dir)?;
+        for path in root_files {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if name == ".cloak" {
+                let rel = path.strip_prefix(&profile_root).unwrap_or(&path);
+                let dest = staging_profiles.join(rel);
+                if let Some(parent) = dest.parent() {
+                    fs::create_dir_all(parent)
+                        .wrap_err_with(|| format!("failed creating {}", parent.display()))?;
+                }
+                fs::copy(&path, &dest)
+                    .wrap_err_with(|| format!("failed copying {}", path.display()))?;
+            } else {
+                all_uncovered.push(UncoveredEntry {
+                    path: name,
+                    size_bytes: path.metadata().map(|m| m.len()).unwrap_or(0),
+                });
+            }
+        }
+
         for entry in fs::read_dir(&profile_dir)
             .wrap_err_with(|| format!("failed reading {}", profile_dir.display()))?
         {
@@ -622,17 +668,24 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
     paths::ensure_secure_dir(&output_dir)?;
     let filename = format!("cloak-backup-{}.tar.gz.gpg", manifest.created_at);
     let final_path = output_dir.join(&filename);
+    // Cifra para um nome temporario e renomeia no fim: o nome final so passa a
+    // existir depois da cifragem completa. Sem isso, uma interrupcao deixa um
+    // artefato truncado com o nome definitivo — e, num output_dir sincronizado,
+    // ele seria o mais recente do diretorio e venceria "restaurar o ultimo backup".
+    let partial_path = output_dir.join(format!("{filename}.partial"));
 
     let tar_tmp = staging.path().join("archive.tar.gz");
     create_tar_gz(&payload, &tar_tmp)?;
 
     let passphrase = resolve_passphrase();
-    if let Err(e) = gpg_encrypt(&tar_tmp, &final_path, passphrase.as_deref()) {
-        let _ = fs::remove_file(&final_path);
+    if let Err(e) = gpg_encrypt(&tar_tmp, &partial_path, passphrase.as_deref()) {
+        let _ = fs::remove_file(&partial_path);
         return Err(e);
     }
+    paths::set_owner_only_file(&partial_path)?;
+    fs::rename(&partial_path, &final_path)
+        .wrap_err_with(|| format!("failed finalizing artifact at {}", final_path.display()))?;
     let _ = fs::remove_file(&tar_tmp);
-    paths::set_owner_only_file(&final_path)?;
 
     println!("Artefato: {}", final_path.display());
 
@@ -808,6 +861,18 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
         .wrap_err("manifest.json missing or unreadable in archive")?;
     let manifest: Manifest =
         serde_json::from_str(&manifest_raw).wrap_err("failed parsing manifest.json")?;
+
+    // Checagem de formato: NAO contornavel por --force. Um cloak antigo nao
+    // tem como adivinhar a semantica de um formato futuro, e escrever no
+    // perfil do usuario com base em palpite e' pior do que recusar.
+    if manifest.format_version > FORMAT_VERSION {
+        return Err(eyre!(
+            "este artefato usa o formato de backup v{} e este cloak suporta ate v{}; \
+             atualize o cloak para restaurar",
+            manifest.format_version,
+            FORMAT_VERSION
+        ));
+    }
 
     println!("Restore");
     println!("  origem: {} @ {}", manifest.hostname, manifest.created_at);
@@ -1069,6 +1134,23 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let servers = read_mcp_servers_at(tmp.path(), "inexistente");
         assert!(servers.is_empty());
+    }
+
+    #[test]
+    fn test_restore_rejects_newer_format_version() {
+        // Um cloak antigo nao pode adivinhar a semantica de um formato futuro.
+        let manifest = Manifest {
+            format_version: FORMAT_VERSION + 1,
+            cloak_version: "0.3.1".into(),
+            created_at: "20260725-120000".into(),
+            hostname: "h".into(),
+            uid: Some(1000),
+            home: "/home/x".into(),
+            profile_root: "/home/x/.config/cloak/profiles".into(),
+            include_credentials: false,
+            profiles: vec![],
+        };
+        assert!(manifest.format_version > FORMAT_VERSION);
     }
 
     #[test]

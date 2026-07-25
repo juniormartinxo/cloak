@@ -532,6 +532,125 @@ config_dir_env = "CLAUDE_CONFIG_DIR"
     }
 
     #[test]
+    fn backup_includes_cloak_file_at_profile_root() {
+        // REGRESSAO: arquivos na raiz do perfil eram ignorados pelo laco de CLIs,
+        // ficando fora do backup E fora do relatorio de nao-cobertos.
+        // Monte um perfil que tenha `.cloak` na raiz, rode backup real,
+        // decifre o artefato e assegure que `.cloak` esta la.
+        if !gpg_available() {
+            eprintln!("skipping: gpg not available");
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let xdg = tmp.path().join("xdg");
+        write_config(&xdg);
+        seed_profile(&xdg);
+        let profile_root_cloak_file = xdg.join("cloak/profiles/demo/.cloak");
+        fs::write(&profile_root_cloak_file, "demo\n").expect("write .cloak");
+        let out_dir = tmp.path().join("backups");
+
+        let output = Command::new(cloak_bin())
+            .arg("backup")
+            .arg("--output")
+            .arg(&out_dir)
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .output()
+            .expect("run backup");
+        assert!(
+            output.status.success(),
+            "backup failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !stdout.contains("(tudo coberto pela allowlist)"),
+            "report must not claim full coverage while a loose non-.cloak \
+             invariant would be violated if .cloak were missing; got:\n{stdout}"
+        );
+
+        let artifact = find_artifact(&out_dir);
+        let tar_tmp = tmp.path().join("decrypted.tar.gz");
+        gpg_decrypt_to(&artifact, &tar_tmp, "test-pass");
+        let entries = tar_list_entries(&tar_tmp);
+
+        assert!(
+            entries.iter().any(|e| e == "profiles/demo/.cloak"),
+            ".cloak at profile root missing from archive: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn backup_does_not_leave_partial_artifact_on_encryption_failure() {
+        // Falha de cifragem nao pode deixar arquivo com o nome final no output_dir.
+        // Provoca a falha com um binario `gpg` falso no PATH que sempre sai com
+        // status != 0 (determinístico, sem dependencia de timing/sinais).
+        let tmp = tempdir().expect("tempdir");
+        let xdg = tmp.path().join("xdg");
+        write_config(&xdg);
+        seed_profile(&xdg);
+        let out_dir = tmp.path().join("backups");
+
+        // PATH com um `gpg` falso na frente, que sempre falha, mas preserva o
+        // restante do PATH real para que `tar` e outras ferramentas continuem
+        // resolviveis.
+        let fake_bin_dir = tmp.path().join("fake-bin");
+        fs::create_dir_all(&fake_bin_dir).expect("mkdir fake-bin");
+        let fake_gpg = fake_bin_dir.join("gpg");
+        fs::write(
+            &fake_gpg,
+            "#!/bin/sh\necho 'fake gpg: passphrase rejected' >&2\nexit 1\n",
+        )
+        .expect("write fake gpg");
+        let mut perms = fs::metadata(&fake_gpg).expect("metadata").permissions();
+        perms.set_mode(0o700);
+        fs::set_permissions(&fake_gpg, perms).expect("chmod fake gpg");
+
+        let real_path = std::env::var("PATH").unwrap_or_default();
+        let fake_path = format!("{}:{}", fake_bin_dir.display(), real_path);
+
+        let output = Command::new(cloak_bin())
+            .arg("backup")
+            .arg("--output")
+            .arg(&out_dir)
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .env("PATH", fake_path)
+            .output()
+            .expect("run backup");
+
+        assert!(
+            !output.status.success(),
+            "backup must fail when gpg fails\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let leftovers: Vec<PathBuf> = if out_dir.exists() {
+            fs::read_dir(&out_dir)
+                .expect("read out_dir")
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| {
+                    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    name.contains(".gpg")
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        assert!(
+            leftovers.is_empty(),
+            "no .gpg or .gpg.partial file may remain in output_dir after an \
+             encryption failure; found: {leftovers:?}"
+        );
+    }
+
+    #[test]
     fn restore_wrong_passphrase_fails() {
         if !gpg_available() {
             eprintln!("skipping: gpg not available");
