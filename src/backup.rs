@@ -157,6 +157,85 @@ fn gpg_decrypt(input: &Path, output: &Path, passphrase: Option<&str>) -> Result<
         .wrap_err("failed to decrypt backup archive")
 }
 
+#[allow(dead_code)]
+fn create_tar_gz(src_dir: &Path, output: &Path) -> Result<()> {
+    ensure_tool("tar")?;
+    let src_s = src_dir.to_string_lossy();
+    let out_s = output.to_string_lossy();
+    let status = Command::new("tar")
+        .arg("-czf")
+        .arg(out_s.as_ref())
+        .arg("-C")
+        .arg(src_s.as_ref())
+        .arg(".")
+        .status()
+        .wrap_err("failed to run tar")?;
+    if !status.success() {
+        return Err(eyre!("tar failed while creating archive (status {status})"));
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<()> {
+    ensure_tool("tar")?;
+    let archive_s = archive.to_string_lossy();
+    let dest_s = dest.to_string_lossy();
+    let status = Command::new("tar")
+        .arg("-xzf")
+        .arg(archive_s.as_ref())
+        .arg("-C")
+        .arg(dest_s.as_ref())
+        .status()
+        .wrap_err("failed to run tar")?;
+    if !status.success() {
+        return Err(eyre!(
+            "tar failed while extracting archive (status {status})"
+        ));
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn origin_hostname() -> String {
+    Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+#[allow(dead_code)]
+#[cfg(unix)]
+fn origin_uid(home: &Path) -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(home).map(|m| m.uid()).unwrap_or(0)
+}
+
+#[allow(dead_code)]
+#[cfg(not(unix))]
+fn origin_uid(_home: &Path) -> u32 {
+    0
+}
+
+#[allow(dead_code)]
+fn timestamp_utc() -> Result<String> {
+    let output = Command::new("date")
+        .args(["-u", "+%Y%m%d-%H%M%S"])
+        .output()
+        .wrap_err("failed to run date")?;
+    if !output.status.success() {
+        return Err(eyre!("date command failed"));
+    }
+    let ts = String::from_utf8(output.stdout)
+        .wrap_err("date returned non-utf8")?
+        .trim()
+        .to_string();
+    Ok(ts)
+}
+
 const COMMON_ALLOW: &[&str] = &[
     "settings.json",
     "keybindings.json",
@@ -458,6 +537,32 @@ mod tests {
         fs::write(&plain, b"x").expect("write");
         gpg_encrypt(&plain, &enc, Some("right")).expect("encrypt");
         assert!(gpg_decrypt(&enc, &dec, Some("wrong")).is_err());
+    }
+
+    #[test]
+    fn test_tar_gz_roundtrip() {
+        let tmp = tempdir().expect("tempdir");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(src.join("sub")).expect("mkdir");
+        fs::write(src.join("a.txt"), b"hello").expect("a");
+        fs::write(src.join("sub/b.txt"), b"world").expect("b");
+
+        let archive = tmp.path().join("out.tar.gz");
+        create_tar_gz(&src, &archive).expect("create");
+        assert!(archive.exists());
+
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(&dest).expect("mkdir dest");
+        extract_tar_gz(&archive, &dest).expect("extract");
+        assert_eq!(fs::read(dest.join("a.txt")).expect("a"), b"hello");
+        assert_eq!(fs::read(dest.join("sub/b.txt")).expect("b"), b"world");
+    }
+
+    #[test]
+    fn test_timestamp_utc_format() {
+        let ts = timestamp_utc().expect("timestamp");
+        assert_eq!(ts.len(), 15, "expected YYYYMMDD-HHMMSS, got {ts}");
+        assert_eq!(ts.as_bytes()[8], b'-');
     }
 
     #[test]
