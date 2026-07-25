@@ -1554,13 +1554,26 @@ fn rewrite_paths_in_file(file: &Path, from: &str, to: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// Substitui `from` por `to` apenas quando `from` é uma raiz de caminho
-/// completa, não um prefixo de outro nome.
+/// Um caractere que CONTINUA um componente de caminho.
 ///
-/// Um `replace` literal corromperia silenciosamente: com `from = "/home/ana"`,
-/// a string `/home/anastacia/x` viraria `/home/<novo>stacia/x`. Só tratamos
-/// como raiz quando o caractere seguinte encerra o componente — separador,
-/// aspas, fim da string ou espaço.
+/// A checagem de fronteira é definida por exclusão, não por uma lista de
+/// terminadores. Enumerar terminadores falha em silêncio: `REWRITE_EXTENSIONS`
+/// inclui `.sh` e `.md`, onde paths aparecem sem aspas ao redor — crase em
+/// code-span markdown, `)` em link, `;` em shell. Qualquer terminador esquecido
+/// faria a reescrita não acontecer, e o perfil restaurado continuaria apontando
+/// para o home da máquina antiga sem nenhum aviso.
+fn continues_path_component(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '-' | '_' | '.')
+}
+
+/// Substitui `from` por `to` apenas quando `from` é uma raiz de caminho
+/// completa, não parte de outro nome.
+///
+/// Duas fronteiras são exigidas:
+/// - à direita, para que `from = "/home/ana"` não corrompa `/home/anastacia/x`
+///   (que viraria `/home/<novo>stacia/x`);
+/// - à esquerda, para que `/home/old` não case dentro de `/backup/home/old/x`,
+///   que é um caminho distinto e não deve ser reescrito.
 fn replace_path_root(content: &str, from: &str, to: &str) -> String {
     if from.is_empty() {
         return content.to_string();
@@ -1572,13 +1585,12 @@ fn replace_path_root(content: &str, from: &str, to: &str) -> String {
     while let Some(idx) = rest.find(from) {
         let (before, tail) = rest.split_at(idx);
         let after = &tail[from.len()..];
-        let boundary_ok = match after.chars().next() {
-            None => true,
-            Some(c) => matches!(c, '/' | '"' | '\'' | ' ' | '\\' | ':' | ',' | '\n' | '\r'),
-        };
+
+        let left_ok = before.chars().next_back().is_none_or(|c| !continues_path_component(c));
+        let right_ok = after.chars().next().is_none_or(|c| !continues_path_component(c));
 
         out.push_str(before);
-        if boundary_ok {
+        if left_ok && right_ok {
             out.push_str(to);
         } else {
             out.push_str(from);
