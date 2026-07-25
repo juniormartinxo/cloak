@@ -1,9 +1,11 @@
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
+    process::{Command, Stdio},
 };
 
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{eyre, Context, Result};
 use serde::{Deserialize, Serialize};
 
 // `Config` ainda não tem chamador aqui: entra nas Tasks 8/9, quando o
@@ -78,6 +80,81 @@ fn build_profile_manifest(profile: &str, uncovered: Vec<UncoveredEntry>) -> Prof
         mcp_servers: read_mcp_servers(profile),
         uncovered,
     }
+}
+
+const PASSPHRASE_ENV: &str = "CLOAK_BACKUP_PASSPHRASE";
+
+#[allow(dead_code)]
+fn resolve_passphrase() -> Option<String> {
+    std::env::var(PASSPHRASE_ENV).ok().filter(|v| !v.is_empty())
+}
+
+#[allow(dead_code)]
+fn ensure_tool(name: &str) -> Result<()> {
+    which::which(name)
+        .map(|_| ())
+        .wrap_err_with(|| format!("required tool '{name}' not found in PATH"))
+}
+
+fn run_gpg(args: &[&str], passphrase: Option<&str>) -> Result<()> {
+    ensure_tool("gpg")?;
+    let mut cmd = Command::new("gpg");
+    if let Some(pw) = passphrase {
+        cmd.arg("--batch")
+            .arg("--yes")
+            .arg("--pinentry-mode")
+            .arg("loopback")
+            .arg("--passphrase-fd")
+            .arg("0");
+        cmd.args(args);
+        cmd.stdin(Stdio::piped());
+        let mut child = cmd.spawn().wrap_err("failed to spawn gpg")?;
+        child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| eyre!("failed to open gpg stdin"))?
+            .write_all(pw.as_bytes())
+            .wrap_err("failed writing passphrase to gpg")?;
+        let status = child.wait().wrap_err("failed waiting for gpg")?;
+        if !status.success() {
+            return Err(eyre!("gpg exited with status {status}"));
+        }
+    } else {
+        cmd.args(args);
+        let status = cmd.status().wrap_err("failed to run gpg (interactive)")?;
+        if !status.success() {
+            return Err(eyre!(
+                "gpg failed (status {status}); pinentry may have timed out or been cancelled"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn gpg_encrypt(input: &Path, output: &Path, passphrase: Option<&str>) -> Result<()> {
+    let input_s = input.to_string_lossy();
+    let output_s = output.to_string_lossy();
+    run_gpg(
+        &[
+            "--symmetric",
+            "--cipher-algo",
+            "AES256",
+            "-o",
+            &output_s,
+            &input_s,
+        ],
+        passphrase,
+    )
+    .wrap_err("failed to encrypt backup archive")
+}
+
+#[allow(dead_code)]
+fn gpg_decrypt(input: &Path, output: &Path, passphrase: Option<&str>) -> Result<()> {
+    let input_s = input.to_string_lossy();
+    let output_s = output.to_string_lossy();
+    run_gpg(&["-o", &output_s, "--decrypt", &input_s], passphrase)
+        .wrap_err("failed to decrypt backup archive")
 }
 
 const COMMON_ALLOW: &[&str] = &[
@@ -344,6 +421,43 @@ mod tests {
         let back: Manifest = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.profiles[0].name, "demo");
         assert_eq!(back.profiles[0].oauth_account.as_deref(), Some("a@b.com"));
+    }
+
+    fn gpg_available() -> bool {
+        which::which("gpg").is_ok()
+    }
+
+    #[test]
+    fn test_gpg_encrypt_decrypt_roundtrip() {
+        if !gpg_available() {
+            eprintln!("skipping: gpg not available");
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let plain = tmp.path().join("plain.txt");
+        let enc = tmp.path().join("plain.txt.gpg");
+        let dec = tmp.path().join("decrypted.txt");
+        fs::write(&plain, b"segredo-de-teste").expect("write plain");
+
+        gpg_encrypt(&plain, &enc, Some("pw123")).expect("encrypt");
+        assert!(enc.exists());
+        gpg_decrypt(&enc, &dec, Some("pw123")).expect("decrypt");
+        assert_eq!(fs::read(&dec).expect("read dec"), b"segredo-de-teste");
+    }
+
+    #[test]
+    fn test_gpg_decrypt_wrong_passphrase_fails() {
+        if !gpg_available() {
+            eprintln!("skipping: gpg not available");
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let plain = tmp.path().join("p.txt");
+        let enc = tmp.path().join("p.txt.gpg");
+        let dec = tmp.path().join("d.txt");
+        fs::write(&plain, b"x").expect("write");
+        gpg_encrypt(&plain, &enc, Some("right")).expect("encrypt");
+        assert!(gpg_decrypt(&enc, &dec, Some("wrong")).is_err());
     }
 
     #[test]
