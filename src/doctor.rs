@@ -1,7 +1,8 @@
 use std::{
     fs,
-    io::{self, IsTerminal},
+    io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
+    process::{Command, Stdio},
 };
 
 use color_eyre::eyre::{Context, Result};
@@ -25,6 +26,13 @@ struct ProfileSummary {
     cli_dirs_missing: usize,
     credentials_detected: usize,
     credentials_missing: usize,
+}
+
+pub struct BackupToolsSummary {
+    pub tar: bool,
+    pub gzip: bool,
+    pub gpg: bool,
+    pub gpg_encrypts: bool,
 }
 
 struct CodexProfileIssue {
@@ -89,6 +97,28 @@ pub fn run_doctor(config: &Config, config_path: &Path, config_created: bool) -> 
         print_codex_profile_issues(&codex_issues);
     }
 
+    let backup_tools = check_backup_tools();
+    println!();
+    println!("{}", format_section_title("Backup Tools"));
+    print_detail_line("tar", if backup_tools.tar { "found" } else { "MISSING" });
+    print_detail_line(
+        "gzip",
+        if backup_tools.gzip {
+            "found"
+        } else {
+            "MISSING"
+        },
+    );
+    print_detail_line("gpg", if backup_tools.gpg { "found" } else { "MISSING" });
+    print_detail_line(
+        "gpg encrypt",
+        if backup_tools.gpg_encrypts {
+            "ok"
+        } else {
+            "FAILED"
+        },
+    );
+
     Ok(())
 }
 
@@ -110,6 +140,58 @@ fn check_binaries(config: &Config) -> BinarySummary {
         configured: found + missing,
         found,
         missing,
+    }
+}
+
+fn gpg_can_encrypt() -> bool {
+    if which::which("gpg").is_err() {
+        return false;
+    }
+    let Ok(tmp) = tempfile::tempdir() else {
+        return false;
+    };
+    let plain = tmp.path().join("probe.txt");
+    let enc = tmp.path().join("probe.txt.gpg");
+    if std::fs::write(&plain, b"probe").is_err() {
+        return false;
+    }
+    let mut child = match Command::new("gpg")
+        .args([
+            "--batch",
+            "--yes",
+            "--pinentry-mode",
+            "loopback",
+            "--passphrase-fd",
+            "0",
+            "--symmetric",
+            "--cipher-algo",
+            "AES256",
+            "-o",
+        ])
+        .arg(&enc)
+        .arg(&plain)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    if let Some(stdin) = child.stdin.as_mut() {
+        if stdin.write_all(b"probe-pass").is_err() {
+            return false;
+        }
+    }
+    matches!(child.wait(), Ok(s) if s.success()) && enc.exists()
+}
+
+pub fn check_backup_tools() -> BackupToolsSummary {
+    BackupToolsSummary {
+        tar: which::which("tar").is_ok(),
+        gzip: which::which("gzip").is_ok(),
+        gpg: which::which("gpg").is_ok(),
+        gpg_encrypts: gpg_can_encrypt(),
     }
 }
 
@@ -771,5 +853,17 @@ mod tests {
 
         let dirs = collect_dirs(tmp.path()).expect("collect");
         assert!(dirs.is_empty());
+    }
+
+    #[test]
+    fn test_check_backup_tools_reports_presence() {
+        let summary = super::check_backup_tools();
+        // tar e gzip praticamente sempre presentes no ambiente de teste Unix.
+        assert_eq!(summary.tar, which::which("tar").is_ok());
+        assert_eq!(summary.gpg, which::which("gpg").is_ok());
+        // Se gpg está presente e cifra, gpg_encrypts deve ser true.
+        if summary.gpg {
+            assert_eq!(summary.gpg_encrypts, super::gpg_can_encrypt());
+        }
     }
 }
