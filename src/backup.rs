@@ -4,11 +4,80 @@ use std::{
 };
 
 use color_eyre::eyre::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+// `Config` ainda não tem chamador aqui: entra nas Tasks 8/9, quando o
+// manifesto passa a ser montado a partir do fluxo real de `backup`.
+#[allow(unused_imports)]
+use crate::{account, config::Config, paths};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UncoveredEntry {
     pub path: String,
     pub size_bytes: u64,
+}
+
+#[allow(dead_code)]
+const FORMAT_VERSION: u32 = 1;
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Manifest {
+    pub format_version: u32,
+    pub cloak_version: String,
+    pub created_at: String,
+    pub hostname: String,
+    pub uid: u32,
+    pub home: String,
+    pub profile_root: String,
+    pub include_credentials: bool,
+    pub profiles: Vec<ProfileManifest>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileManifest {
+    pub name: String,
+    pub oauth_account: Option<String>,
+    pub mcp_servers: Vec<String>,
+    pub uncovered: Vec<UncoveredEntry>,
+}
+
+/// Lê os MCP registrados a partir de uma raiz de perfis explícita.
+/// A raiz entra por parâmetro para manter os testes livres de env global.
+fn read_mcp_servers_at(profile_root: &Path, profile: &str) -> Vec<String> {
+    let mut servers = Vec::new();
+    let claude_json = profile_root
+        .join(profile)
+        .join("claude")
+        .join(".claude.json");
+    if let Ok(raw) = fs::read_to_string(&claude_json) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(map) = value.get("mcpServers").and_then(|v| v.as_object()) {
+                servers.extend(map.keys().cloned());
+            }
+        }
+    }
+    servers
+}
+
+/// Wrapper que resolve a raiz padrão de perfis. É o ponto usado pelo resto do código.
+#[allow(dead_code)]
+fn read_mcp_servers(profile: &str) -> Vec<String> {
+    match paths::profiles_dir() {
+        Ok(root) => read_mcp_servers_at(&root, profile),
+        Err(_) => Vec::new(),
+    }
+}
+
+#[allow(dead_code)]
+fn build_profile_manifest(profile: &str, uncovered: Vec<UncoveredEntry>) -> ProfileManifest {
+    ProfileManifest {
+        name: profile.to_string(),
+        oauth_account: account::profile_email(profile),
+        mcp_servers: read_mcp_servers(profile),
+        uncovered,
+    }
 }
 
 const COMMON_ALLOW: &[&str] = &[
@@ -225,6 +294,56 @@ mod tests {
         assert!(unc.contains(&"mystery.bin"));
         // Diretório totalmente descoberto vira uma linha só.
         assert!(unc.contains(&"sessions"));
+    }
+
+    #[test]
+    fn test_read_mcp_servers_at_reads_claude_json() {
+        // Sem set_var: a raiz entra por parâmetro, então o teste é puro
+        // e não corre com outros testes em paralelo.
+        let tmp = tempdir().expect("tempdir");
+        let profile_root = tmp.path().join("profiles");
+        let claude_dir = profile_root.join("demo/claude");
+        fs::create_dir_all(&claude_dir).expect("mkdir");
+        fs::write(
+            claude_dir.join(".claude.json"),
+            r#"{"mcpServers":{"time":{},"gitnexus":{}}}"#,
+        )
+        .expect("write claude.json");
+
+        let mut servers = read_mcp_servers_at(&profile_root, "demo");
+        servers.sort();
+        assert_eq!(servers, vec!["gitnexus".to_string(), "time".to_string()]);
+    }
+
+    #[test]
+    fn test_read_mcp_servers_at_missing_file_returns_empty() {
+        let tmp = tempdir().expect("tempdir");
+        let servers = read_mcp_servers_at(tmp.path(), "inexistente");
+        assert!(servers.is_empty());
+    }
+
+    #[test]
+    fn test_manifest_serializes_roundtrip() {
+        let manifest = Manifest {
+            format_version: 1,
+            cloak_version: "0.3.1".into(),
+            created_at: "20260724-120000".into(),
+            hostname: "host".into(),
+            uid: 1000,
+            home: "/home/x".into(),
+            profile_root: "/home/x/.config/cloak/profiles".into(),
+            include_credentials: false,
+            profiles: vec![ProfileManifest {
+                name: "demo".into(),
+                oauth_account: Some("a@b.com".into()),
+                mcp_servers: vec!["time".into()],
+                uncovered: vec![],
+            }],
+        };
+        let json = serde_json::to_string(&manifest).expect("serialize");
+        let back: Manifest = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.profiles[0].name, "demo");
+        assert_eq!(back.profiles[0].oauth_account.as_deref(), Some("a@b.com"));
     }
 
     #[test]
