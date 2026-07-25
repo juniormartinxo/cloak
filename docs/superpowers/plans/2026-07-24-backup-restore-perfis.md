@@ -1272,9 +1272,16 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
     // esses dados ficam expostos localmente durante toda a execução do backup.
     // Travar a raiz em 0700 basta: sem permissão de travessia, o conteúdo
     // aninhado fica inacessível a terceiros.
+    // O conteúdo a empacotar fica em `payload/`, e o tar.gz é escrito como
+    // IRMÃO de `payload/`, nunca dentro dele. Se o tar for gravado no mesmo
+    // diretório que ele está empacotando, o tar tenta incluir o próprio arquivo
+    // de saída enquanto ele cresce e aborta com
+    // `tar: .: file changed as we read it` (exit 1) — o backup nunca completa.
     let staging = tempfile::tempdir().wrap_err("failed to create staging dir")?;
     paths::set_owner_only_dir(staging.path())?;
-    let staging_profiles = staging.path().join("profiles");
+    let payload = staging.path().join("payload");
+    paths::ensure_secure_dir(&payload)?;
+    let staging_profiles = payload.join("profiles");
     paths::ensure_secure_dir(&staging_profiles)?;
 
     let mut profile_manifests = Vec::new();
@@ -1340,7 +1347,7 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
     // Config global do cloak.
     let global_config = paths::config_file_path()?;
     if global_config.exists() {
-        fs::copy(&global_config, staging.path().join("config.toml"))
+        fs::copy(&global_config, payload.join("config.toml"))
             .wrap_err("failed copying global config.toml")?;
     }
 
@@ -1357,7 +1364,7 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
     };
     let manifest_json =
         serde_json::to_string_pretty(&manifest).wrap_err("failed serializing manifest")?;
-    fs::write(staging.path().join("manifest.json"), manifest_json)
+    fs::write(payload.join("manifest.json"), manifest_json)
         .wrap_err("failed writing manifest")?;
 
     if opts.dry_run {
@@ -1372,7 +1379,7 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
     let final_path = output_dir.join(&filename);
 
     let tar_tmp = staging.path().join("archive.tar.gz");
-    create_tar_gz(staging.path(), &tar_tmp)?;
+    create_tar_gz(&payload, &tar_tmp)?;
 
     let passphrase = resolve_passphrase();
     if let Err(e) = gpg_encrypt(&tar_tmp, &final_path, passphrase.as_deref()) {
