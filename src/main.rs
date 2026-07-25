@@ -1,4 +1,5 @@
 mod account;
+mod backup;
 mod cli;
 mod config;
 mod doctor;
