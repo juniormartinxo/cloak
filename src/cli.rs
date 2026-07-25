@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
@@ -70,6 +72,47 @@ pub enum Commands {
     Permission {
         #[command(subcommand)]
         command: PermissionCommands,
+    },
+
+    /// Generate an encrypted backup of profile configuration and knowledge
+    Backup {
+        /// Back up only this profile (default: all profiles)
+        #[arg(long)]
+        profile: Option<String>,
+
+        /// Directory to write the artifact into (overrides config and default)
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Include OAuth credentials in the backup (requires encryption)
+        #[arg(long)]
+        include_credentials: bool,
+
+        /// Print the inclusion/uncovered report without generating an artifact
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Restore profiles from an encrypted backup artifact
+    Restore {
+        /// Path to the encrypted backup artifact
+        archive: PathBuf,
+
+        /// Restore only this profile (default: all profiles in the artifact)
+        #[arg(long)]
+        profile: Option<String>,
+
+        /// Overwrite existing profiles and bypass identity checks
+        #[arg(long)]
+        force: bool,
+
+        /// Print the restore plan without touching the destination
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Do not rewrite absolute paths from the origin machine
+        #[arg(long)]
+        no_rewrite_paths: bool,
     },
 }
 
@@ -823,6 +866,52 @@ mod tests {
                 assert_eq!(header, vec!["Authorization: Bearer token"]);
             }
             _ => panic!("expected mcp install command"),
+        }
+    }
+
+    #[test]
+    fn test_backup_parses_flags() {
+        let parsed = Cli::parse_from(["cloak", "backup", "--profile", "work", "--dry-run"]);
+        match parsed.command {
+            Commands::Backup {
+                profile,
+                dry_run,
+                include_credentials,
+                output,
+            } => {
+                assert_eq!(profile.as_deref(), Some("work"));
+                assert!(dry_run);
+                assert!(!include_credentials);
+                assert!(output.is_none());
+            }
+            _ => panic!("expected backup command"),
+        }
+    }
+
+    #[test]
+    fn test_restore_parses_archive_and_flags() {
+        let parsed = Cli::parse_from([
+            "cloak",
+            "restore",
+            "/tmp/backup.tar.gz.gpg",
+            "--force",
+            "--no-rewrite-paths",
+        ]);
+        match parsed.command {
+            Commands::Restore {
+                archive,
+                force,
+                no_rewrite_paths,
+                profile,
+                dry_run,
+            } => {
+                assert_eq!(archive.to_str(), Some("/tmp/backup.tar.gz.gpg"));
+                assert!(force);
+                assert!(no_rewrite_paths);
+                assert!(profile.is_none());
+                assert!(!dry_run);
+            }
+            _ => panic!("expected restore command"),
         }
     }
 }

@@ -304,6 +304,12 @@ fn main() -> Result<()> {
 
             doctor::run_doctor(&config_for_doctor, &loaded.path, loaded.created)?;
         }
+        Commands::Backup { .. } => {
+            return Err(eyre!("backup command not yet implemented"));
+        }
+        Commands::Restore { .. } => {
+            return Err(eyre!("restore command not yet implemented"));
+        }
         Commands::Completions { .. } => unreachable!("handled before config load"),
     }
 
