@@ -1263,8 +1263,17 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
         .map(|b| b.include.clone())
         .unwrap_or_default();
 
-    // Área de staging temporária (0700).
+    // Área de staging temporária.
+    //
+    // ATENÇÃO: `tempfile::tempdir()` cria o diretório com 0777 & !umask, o que
+    // com o umask padrão 022 resulta em 0755 — legível por qualquer usuário da
+    // máquina. A raiz do staging guarda `manifest.json`, `config.toml` e o
+    // `archive.tar.gz` AINDA EM CLARO antes da cifragem. Sem o chmod abaixo,
+    // esses dados ficam expostos localmente durante toda a execução do backup.
+    // Travar a raiz em 0700 basta: sem permissão de travessia, o conteúdo
+    // aninhado fica inacessível a terceiros.
     let staging = tempfile::tempdir().wrap_err("failed to create staging dir")?;
+    paths::set_owner_only_dir(staging.path())?;
     let staging_profiles = staging.path().join("profiles");
     paths::ensure_secure_dir(&staging_profiles)?;
 
@@ -1397,8 +1406,20 @@ fn print_backup_profile_report(profile: &str, uncovered: &[UncoveredEntry]) {
     }
 }
 
+/// Escapa um valor para interpolação segura em `sh -c`.
+///
+/// O destino típico é `/mnt/c/Users/...` num mount WSL, onde nome de usuário
+/// com espaço é comum. Sem aspas, o caminho quebra em várias palavras para o
+/// shell e o upload falha de forma incompreensível.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r#"'\''"#))
+}
+
 fn run_upload_command(template: &str, archive: &Path) -> Result<()> {
-    let rendered = template.replace("{archive}", &archive.to_string_lossy());
+    let rendered = template.replace(
+        "{archive}",
+        &shell_quote(&archive.to_string_lossy()),
+    );
     println!("upload: {rendered}");
     let status = Command::new("sh")
         .arg("-c")
