@@ -256,7 +256,13 @@ primeira execução.
 Módulo novo `src/backup.rs`, contendo backup, restauração e manifesto. O `main.rs` já tem
 3506 linhas; recebe apenas o dispatch dos dois subcomandos. `src/cli.rs` recebe as
 definições `clap`. `src/config.rs` recebe o bloco `[backup]`. `src/doctor.rs` recebe a
-checagem de presença de `tar`, `gzip` e `gpg`.
+checagem de `tar`, `gzip` e `gpg`.
+
+A checagem do `gpg` no `doctor` confirma que a criptografia funciona de fato, não apenas que
+o binário existe: cifra e decifra um payload mínimo em diretório temporário com uma
+passphrase fixa via `--batch --passphrase`, sem tocar no pinentry. Verifica a capacidade real
+sem depender de interação. Um `gpg` presente mas incapaz de cifrar — ou um agente travado —
+apareceria aqui, antes de o usuário depender dele num backup.
 
 Erros propagados com `color-eyre` e contexto explícito. Sem `unwrap`, `expect` ou `panic!`
 em fluxo de usuário, conforme o `CLAUDE.md`.
@@ -266,6 +272,7 @@ em fluxo de usuário, conforme o `CLAUDE.md`.
 | Situação | Comportamento |
 |---|---|
 | `tar`, `gzip` ou `gpg` ausente | Aborta antes de qualquer escrita, indicando o binário |
+| Pinentry expira ou é cancelado | `gpg` retorna código diferente de zero; o cloak propaga com contexto, remove o intermediário e não deixa artefato parcial |
 | Passphrase incorreta no restore | Erro do gpg propagado com contexto, temporário removido |
 | `output_dir` inexistente ou sem permissão | Aborta antes de gerar o artefato |
 | `upload_command` falha | Reporta a falha e o caminho local; exit code diferente de zero |
@@ -289,6 +296,8 @@ em fluxo de usuário, conforme o `CLAUDE.md`.
 - Perfil existente não é sobrescrito sem `--force`.
 - Reescrita de paths corrige raízes e `--no-rewrite-paths` preserva o original.
 - Ausência de `gpg` aborta antes de escrever.
+- Falha na etapa de cifragem (gpg com código diferente de zero) remove o intermediário e não
+  deixa artefato parcial no `output_dir`.
 
 Testes que dependem de `gpg` são ignorados quando o binário não está disponível no ambiente.
 
