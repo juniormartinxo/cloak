@@ -99,12 +99,18 @@ fn run_gpg(args: &[&str], passphrase: Option<&str>) -> Result<()> {
         cmd.args(args);
         cmd.stdin(Stdio::piped());
         let mut child = cmd.spawn().wrap_err("failed to spawn gpg")?;
-        child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| eyre!("failed to open gpg stdin"))?
-            .write_all(pw.as_bytes())
-            .wrap_err("failed writing passphrase to gpg")?;
+        let write_result = match child.stdin.as_mut() {
+            Some(stdin) => stdin
+                .write_all(pw.as_bytes())
+                .wrap_err("failed writing passphrase to gpg"),
+            None => Err(eyre!("failed to open gpg stdin")),
+        };
+        if let Err(err) = write_result {
+            // Colhe o filho para nao deixar zumbi antes de propagar.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(err);
+        }
         let status = child.wait().wrap_err("failed waiting for gpg")?;
         if !status.success() {
             return Err(eyre!("gpg exited with status {status}"));
