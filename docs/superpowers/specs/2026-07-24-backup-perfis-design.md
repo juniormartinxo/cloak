@@ -37,37 +37,58 @@ Medição feita nos perfis reais em 2026-07-24:
 | Conjunto | Tamanho |
 |---|---|
 | `~/.config/cloak/profiles/` completo | ~7 GB |
-| Após denylist ingênua | 367 MB |
-| Após denylist refinada | **7,1 MB** |
+| Conteúdo relevante para backup | **7,1 MB** |
 
-Os 360 MB de diferença entre as duas denylists vinham de três fontes, todas reproduzíveis:
-um venv Python em `gojunior/claude/security/agent-sdk-venv` (228 MB), um repositório git em
-`amjr/codex/.tmp/plugins/.git` (20 MB) e `codex/history.jsonl` (2,9 MB).
+O que resta depois de descartar sessões, logs, caches, plugins baixados e histórico de
+projetos é da ordem de poucos megabytes por perfil (`amjr` 3,3 MB, `gojunior` 3,8 MB).
 
-### Seleção por denylist, com relatório
+### Seleção por allowlist, com relatório de não-cobertos
 
-O cloak copia tudo do perfil exceto padrões reconhecidos como descartáveis.
+O cloak copia apenas o que está numa allowlist built-in por CLI, e ao final imprime um
+relatório de tudo que encontrou no perfil e **não** entrou no backup.
 
-A alternativa — allowlist built-in por CLI — foi recusada porque falha em silêncio: quando
-uma CLI de terceiro introduz um arquivo relevante, ele fica de fora do backup e o usuário
-só descobre no momento da restauração, que é exatamente o pior momento possível.
+A escolha entre allowlist e denylist é uma escolha de qual falha silenciosa o usuário
+prefere. A denylist copia tudo exceto lixo reconhecido: nunca omite, mas quando uma CLI
+passa a gravar um arquivo novo — possivelmente com um segredo — esse arquivo vai
+silenciosamente para a nuvem. A allowlist copia só o conhecido: nunca vaza o desconhecido,
+mas quando uma CLI introduz um arquivo importante, ele fica de fora e o usuário só descobre
+ao restaurar, no pior momento possível.
 
-A denylist tem o defeito oposto (inchar sem aviso), mitigado pelo relatório obrigatório de
-inclusão e exclusão com tamanhos. Foi esse mecanismo que revelou o venv de 228 MB durante o
-próprio desenho da feature.
+Para uma ferramenta cujo propósito é isolar credenciais e minimizar o que sai da máquina,
+"saber exatamente o que sobe" pesa mais que "nunca omitir". A allowlist é a escolha alinhada
+a esse propósito. O único defeito grave dela — a omissão silenciosa — é neutralizado pelo
+relatório obrigatório de não-cobertos: a cada backup o cloak lista os itens do perfil que
+ficaram de fora, com tamanhos, para o usuário decidir se algo novo precisa entrar. Sem esse
+relatório a allowlist seria imprópria para backup; com ele, entrega controle e privacidade
+sem o risco de perda silenciosa.
 
-Denylist inicial:
+Allowlist inicial, relativa à raiz de cada CLI dentro do perfil:
 
 ```
-*/cache          */sessions        */projects       */plugins/cache
-*/plugins/marketplaces             */file-history   */shell-snapshots
-*/shell_snapshots                  */paste-cache    */session-env
-*/node_modules   */generated_images                 */logs
-*.sqlite*        *venv             */site-packages  */.git
-*/.tmp           history.jsonl     codex.backup
+# comum a todas as CLIs
+settings.json      keybindings.json   *.md
+skills/            .agents/
+
+# claude
+CLAUDE.md          statusline-command.sh
+plugins/installed_plugins.json         plugins/known_marketplaces.json
+plugins/blocklist.json
+
+# codex
+config.toml        AGENTS.md          hooks.json         memories/
+
+# nível do perfil e global
+<perfil>/.cloak    config.toml (global do cloak)
 ```
 
-Extensível por `exclude` em `[backup]` no `config.toml`.
+A lista de MCP (`.claude.json` → `mcpServers`, `codex/config.toml` → `mcp_servers`) e a
+identidade da conta (`.claude.json` → `oauthAccount`) são lidas para o manifesto e para o
+relatório de reconstrução, sem copiar o `.claude.json` inteiro — ele carrega os 51
+`projectPath` e metadados voláteis que não pertencem a um backup de configuração.
+
+Extensível por `include` em `[backup]` no `config.toml`: os padrões do usuário somam-se aos
+built-in. Não há como remover um item built-in da allowlist por configuração; o built-in é o
+piso do que o cloak considera essencial.
 
 ### Transporte: artefato local mais comando de upload plugável
 
@@ -129,7 +150,8 @@ cloak restore <arquivo> [--profile <nome>] [--force] [--dry-run] [--no-rewrite-p
 ```
 
 `backup` sem `--profile` inclui todos os perfis em um artefato único — o caso "vou formatar
-a máquina". `--dry-run` imprime o relatório de inclusão e exclusão sem gerar arquivo.
+a máquina". `--dry-run` imprime o relatório de itens incluídos e não cobertos sem gerar
+arquivo.
 
 `restore` sem `--profile` restaura todos os perfis contidos no artefato. Com `--profile`,
 restaura apenas o perfil indicado, que precisa existir no artefato sob pena de erro.
@@ -142,9 +164,10 @@ O diretório de saída é resolvido nesta ordem: `--output`, depois `output_dir`
 `config.toml`, depois o padrão `~/.config/cloak/backups`. O padrão é criado com `0700`
 quando ausente.
 
-O diretório de backup é sempre excluído do próprio backup, independentemente de configuração.
-Sem isso, o padrão `~/.config/cloak/backups` faria cada execução engolir os artefatos
-anteriores, com crescimento exponencial.
+A allowlist opera sobre os diretórios de perfil, não sobre o `output_dir`, então o padrão
+`~/.config/cloak/backups` fica naturalmente fora do backup. Ainda assim, o cloak nunca inclui
+o diretório de saída no artefato mesmo que ele seja configurado dentro de um perfil, para
+evitar que cada execução engula os artefatos anteriores.
 
 Configuração em `~/.config/cloak/config.toml`:
 
@@ -152,8 +175,10 @@ Configuração em `~/.config/cloak/config.toml`:
 [backup]
 output_dir = "/mnt/c/Users/junior/OneDrive/cloak-backups"
 upload_command = "rclone copy {archive} gdrive:cloak/"
-exclude = []
+include = []
 ```
+
+`include` acrescenta padrões à allowlist built-in; não remove nenhum built-in.
 
 ## Formato do artefato
 
@@ -169,15 +194,18 @@ O manifesto fica dentro do envelope cifrado. Em claro, vazaria e-mail da conta, 
 lista de perfis para qualquer um com posse do arquivo.
 
 Campos: versão do formato, versão do cloak, data, hostname, uid, perfis incluídos com a
-conta OAuth de cada um, `profile_root` de origem, `$HOME` de origem, exclusões aplicadas e
-indicação de se credenciais foram incluídas.
+conta OAuth e os servidores MCP registrados de cada um, `profile_root` de origem, `$HOME` de
+origem, itens do perfil não cobertos pela allowlist e indicação de se credenciais foram
+incluídas.
 
 ## Fluxo de backup
 
 1. Resolve perfis alvo e diretório de saída.
-2. Aplica a denylist e monta a lista de inclusão.
+2. Aplica a allowlist (built-in mais `include`) e monta a lista de inclusão; em paralelo,
+   registra os itens do perfil que não casaram com nenhum padrão.
 3. Coleta identidade de cada perfil (`oauthAccount` do `.claude.json`) e monta o manifesto.
-4. Imprime o relatório de inclusão e exclusão com tamanhos. Em `--dry-run`, encerra aqui.
+4. Imprime o relatório: itens incluídos e itens não cobertos, ambos com tamanhos. Em
+   `--dry-run`, encerra aqui.
 5. Gera o tar comprimido em diretório temporário com permissão restrita.
 6. Cifra com `gpg --symmetric`, solicitando a passphrase.
 7. Move o artefato para `output_dir` com `0600` e remove o intermediário.
@@ -198,9 +226,10 @@ indicação de se credenciais foram incluídas.
 ### Reescrita de paths absolutos
 
 Sem ela, o perfil restaurado aponta para o home da máquina antiga. Os arquivos afetados são
-`.claude.json` (51 chaves em `projects`), `plugins/installed_plugins.json` (`installPath`,
-`projectPath`), `plugins/known_marketplaces.json` (`installLocation`) e o `config.toml` do
-cloak (caminhos de binários).
+`plugins/installed_plugins.json` (`installPath`, `projectPath`),
+`plugins/known_marketplaces.json` (`installLocation`) e o `config.toml` do cloak (caminhos de
+binários). O `.claude.json` não entra no backup, então seus `projectPath` não precisam de
+reescrita — o Claude os recria na primeira execução.
 
 A substituição troca apenas as raízes exatas — `profile_root` e `$HOME` de origem — e só em
 arquivos de texto (JSON, TOML, MD, SH). Cada arquivo alterado aparece no relatório.
@@ -212,9 +241,10 @@ mitigações; `--no-rewrite-paths` é a saída de emergência.
 ### Relatório de reconstrução
 
 Após restaurar, o cloak informa o que o backup deliberadamente não carrega e como será
-reconstruído, lendo os manifestos já presentes nos arquivos de configuração restaurados:
-plugins e marketplaces de `installed_plugins.json` e `known_marketplaces.json`, servidores
-MCP de `.claude.json` e `codex/config.toml`.
+reconstruído. Plugins e marketplaces vêm de `installed_plugins.json` e
+`known_marketplaces.json`, que estão no backup. A lista de servidores MCP vem do manifesto —
+capturada do `.claude.json` no momento do backup, já que o `.claude.json` em si não é
+copiado — e de `codex/config.toml`, que está no backup.
 
 O cloak relata, não reinstala. Executar comandos de instalação de CLIs de terceiros criaria
 acoplamento a superfícies que mudam sem aviso, e a quebra apareceria durante uma
@@ -249,7 +279,9 @@ em fluxo de usuário, conforme o `CLAUDE.md`.
 `tests/backup_integration.rs`, no padrão de `tests/exec_integration.rs`, sobre `tempfile`:
 
 - Roundtrip backup e restore preservando conteúdo e permissões.
-- Denylist exclui os padrões previstos e o relatório lista o excluído.
+- Allowlist inclui os padrões previstos e ignora o resto.
+- Relatório de não-cobertos lista item fora da allowlist com tamanho.
+- `include` do config soma-se aos built-in sem removê-los.
 - `--dry-run` não escreve nada.
 - Credenciais ficam fora por padrão e entram com `--include-credentials`.
 - Manifesto registra origem e é lido corretamente.
@@ -266,5 +298,6 @@ Testes que dependem de `gpg` são ignorados quando o binário não está dispon�
   criptografia simétrica e deve constar da documentação do comando.
 - **Reescrita textual de paths pode alterar ocorrência não pretendida** de uma string que
   coincida com a raiz de origem. Mitigado por restrição à raiz exata e pelo relatório.
-- **Denylist pode inchar** quando uma CLI passar a gerar artefato grande fora dos padrões
-  conhecidos. Mitigado pelo relatório de tamanhos a cada execução.
+- **Allowlist pode omitir** um arquivo novo e importante que uma CLI passe a gravar fora dos
+  padrões conhecidos. Mitigado pelo relatório de não-cobertos a cada execução, que obriga o
+  arquivo novo a aparecer para o usuário antes que a omissão vire perda.
