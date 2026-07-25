@@ -180,6 +180,8 @@ fn gpg_can_encrypt() -> bool {
     };
     if let Some(stdin) = child.stdin.as_mut() {
         if stdin.write_all(b"probe-pass").is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
             return false;
         }
     }
