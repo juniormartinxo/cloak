@@ -63,7 +63,7 @@ pub struct Manifest {
     pub cloak_version: String,
     pub created_at: String,           // "YYYYMMDD-HHMMSS" UTC
     pub hostname: String,
-    pub uid: u32,
+    pub uid: Option<u32>,
     pub home: String,                 // $HOME de origem
     pub profile_root: String,         // caminho absoluto de profiles/
     pub include_credentials: bool,
@@ -761,7 +761,7 @@ Adicionar ao módulo de testes de `src/backup.rs`:
             cloak_version: "0.3.1".into(),
             created_at: "20260724-120000".into(),
             hostname: "host".into(),
-            uid: 1000,
+            uid: Some(1000),
             home: "/home/x".into(),
             profile_root: "/home/x/.config/cloak/profiles".into(),
             include_credentials: false,
@@ -805,7 +805,7 @@ pub struct Manifest {
     pub cloak_version: String,
     pub created_at: String,
     pub hostname: String,
-    pub uid: u32,
+    pub uid: Option<u32>,
     pub home: String,
     pub profile_root: String,
     pub include_credentials: bool,
@@ -1126,15 +1126,21 @@ fn origin_hostname() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// Retorna `None` quando o uid não pôde ser determinado.
+///
+/// NÃO use `0` como fallback: `0` é o uid real do root, então uma leitura
+/// falha se tornaria indistinguível de "restaurando como root" e a checagem
+/// de identidade do restore passaria por engano (fail-open). `None` força o
+/// restore a tratar o caso como não-verificável (fail-safe).
 #[cfg(unix)]
-fn origin_uid(home: &Path) -> u32 {
+fn origin_uid(home: &Path) -> Option<u32> {
     use std::os::unix::fs::MetadataExt;
-    fs::metadata(home).map(|m| m.uid()).unwrap_or(0)
+    fs::metadata(home).map(|m| m.uid()).ok()
 }
 
 #[cfg(not(unix))]
-fn origin_uid(_home: &Path) -> u32 {
-    0
+fn origin_uid(_home: &Path) -> Option<u32> {
+    None
 }
 
 fn timestamp_utc() -> Result<String> {
@@ -1577,14 +1583,31 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
     println!("  origem: {} @ {}", manifest.hostname, manifest.created_at);
 
     // Identidade: uid do destino.
+    //
+    // `uid` é Option: `None` significa "não foi possível determinar", que é
+    // diferente de "é o uid 0". Tratar desconhecido como verificado seria
+    // fail-open — exatamente o que a checagem existe para impedir. Portanto
+    // qualquer lado desconhecido exige `--force` explícito.
     let home = dirs::home_dir().ok_or_else(|| eyre!("unable to resolve home directory"))?;
     let dest_uid = origin_uid(&home);
-    if dest_uid != manifest.uid && !opts.force {
-        return Err(eyre!(
-            "identidade divergente: backup do uid {} sendo restaurado por uid {}; use --force para prosseguir",
-            manifest.uid,
-            dest_uid
-        ));
+    if !opts.force {
+        match (manifest.uid, dest_uid) {
+            (Some(backup_uid), Some(current_uid)) if backup_uid != current_uid => {
+                return Err(eyre!(
+                    "identidade divergente: backup do uid {} sendo restaurado por uid {}; \
+                     use --force para prosseguir",
+                    backup_uid,
+                    current_uid
+                ));
+            }
+            (Some(_), Some(_)) => {}
+            _ => {
+                return Err(eyre!(
+                    "não foi possível verificar a identidade do backup \
+                     (uid de origem ou destino indeterminado); use --force para prosseguir"
+                ));
+            }
+        }
     }
 
     let profile_root = paths::profiles_dir()?;
