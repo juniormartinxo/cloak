@@ -246,6 +246,8 @@ fn allowlist_patterns(cli_name: &str) -> Vec<&'static str> {
             "plugins/installed_plugins.json",
             "plugins/known_marketplaces.json",
             "plugins/blocklist.json",
+            "projects/*/memory/",
+            "plans/",
         ]),
         "codex" => patterns.extend(["config.toml", "hooks.json", "memories/"]),
         _ => {}
@@ -253,24 +255,55 @@ fn allowlist_patterns(cli_name: &str) -> Vec<&'static str> {
     patterns
 }
 
+/// Casa um padrão de allowlist contra um caminho relativo, segmento a segmento.
+///
+/// Um segmento `*` no padrão casa com qualquer segmento único do caminho (não
+/// atravessa `/`) — é o que permite expressar `projects/*/memory/`, onde o
+/// segundo segmento é o slug do projeto e varia por perfil.
+///
+/// Formas suportadas (todas usadas em `allowlist_patterns`):
+/// - `nome.ext` ou `dir/nome.ext`: caminho exato, segmento a segmento.
+/// - `*.ext` sem `/`: extensão solta, mas só no nível de topo — não desce em
+///   subpastas (ex.: `*.md` casa `CLAUDE.md`, não `skills/a.md`).
+/// - `dir/*.ext`: extensão dentro de um diretório específico.
+/// - `dir/` (ou `dir/sub/*/mais/`): termina em `/`, casa o próprio diretório
+///   e tudo abaixo dele — o prefixo pode conter segmentos `*`.
 fn matches_pattern(pattern: &str, rel: &str) -> bool {
     if let Some(prefix) = pattern.strip_suffix('/') {
-        // Diretório: casa o próprio dir e tudo abaixo dele.
-        return rel == prefix || rel.starts_with(&format!("{prefix}/"));
-    }
-    if let Some(ext) = pattern.strip_prefix("*.") {
-        // Glob simples "*.ext" só no nível informado (sem subpastas).
-        return !rel.contains('/') && rel.ends_with(&format!(".{ext}"));
-    }
-    if let Some((dir, glob)) = pattern.rsplit_once('/') {
-        if let Some(ext) = glob.strip_prefix("*.") {
-            if let Some((rdir, rfile)) = rel.rsplit_once('/') {
-                return rdir == dir && rfile.ends_with(&format!(".{ext}"));
-            }
+        // Diretório: casa o próprio dir e tudo abaixo dele. `rel` pode ser
+        // mais profundo que o prefixo — só os segmentos do prefixo precisam bater.
+        let prefix_segs: Vec<&str> = prefix.split('/').collect();
+        let rel_segs: Vec<&str> = rel.split('/').collect();
+        if rel_segs.len() < prefix_segs.len() {
             return false;
         }
+        return prefix_segs
+            .iter()
+            .zip(rel_segs.iter())
+            .all(|(p, r)| *p == "*" || p == r);
     }
-    rel == pattern
+    if !pattern.contains('/') {
+        if let Some(ext) = pattern.strip_prefix("*.") {
+            // Glob simples "*.ext" só no nível informado (sem subpastas).
+            return !rel.contains('/') && rel.ends_with(&format!(".{ext}"));
+        }
+        return rel == pattern;
+    }
+    // Caminho com múltiplos segmentos: exige a mesma profundidade e casa
+    // segmento a segmento, com `*` coringa de segmento único e `*.ext`
+    // coringa de extensão no último (ou qualquer) segmento.
+    let pattern_segs: Vec<&str> = pattern.split('/').collect();
+    let rel_segs: Vec<&str> = rel.split('/').collect();
+    if pattern_segs.len() != rel_segs.len() {
+        return false;
+    }
+    pattern_segs
+        .iter()
+        .zip(rel_segs.iter())
+        .all(|(p, r)| match p.strip_prefix("*.") {
+            Some(ext) => r.ends_with(&format!(".{ext}")),
+            None => *p == "*" || p == r,
+        })
 }
 
 fn is_allowed(cli_name: &str, rel: &Path, extra: &[String]) -> bool {
@@ -311,13 +344,92 @@ fn walk_files(current: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// Retorna `true` se pelo menos um arquivo dentro de `dir` (recursivamente)
+/// é coberto pela allowlist.
+///
+/// Usado para decidir, subárvore por subárvore, se ela pode ser agregada
+/// numa linha única de relatório (nada coberto lá dentro) ou se precisa ser
+/// percorrida filho a filho (há cobertura parcial).
+fn subtree_has_included_file(
+    dir: &Path,
+    rel_prefix: &str,
+    cli_name: &str,
+    extra: &[String],
+) -> Result<bool> {
+    for entry in fs::read_dir(dir).wrap_err_with(|| format!("failed reading {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let rel = if rel_prefix.is_empty() {
+            name
+        } else {
+            format!("{rel_prefix}/{name}")
+        };
+        if path.is_dir() {
+            if subtree_has_included_file(&path, &rel, cli_name, extra)? {
+                return Ok(true);
+            }
+        } else if is_allowed(cli_name, Path::new(&rel), extra) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Preenche `out` com as maiores subárvores inteiramente não cobertas a
+/// partir de `dir`, em vez de enumerar cada arquivo folha não coberto.
+///
+/// CUIDADO: um diretório NÃO pode ser considerado "coberto" só porque algum
+/// arquivo dentro dele entrou. Em `claude/plugins/`, por exemplo, três
+/// arquivos casam com a allowlist e ~45 mil arquivos de cache não casam.
+/// Agregar por diretório com `.any()` no nível de topo faria esses arquivos
+/// sumirem em silêncio (nem no backup, nem no relatório) — mas enumerar cada
+/// um deles gera relatórios de dezenas de milhares de linhas, ilegíveis.
+///
+/// Regra recursiva: diretório totalmente descoberto vira UMA linha (com o
+/// tamanho agregado) e não desce mais; diretório com cobertura mista desce e
+/// aplica a mesma regra a cada filho; arquivo não coberto vira uma linha.
+fn collect_uncovered(
+    dir: &Path,
+    rel_prefix: &str,
+    cli_name: &str,
+    extra: &[String],
+    out: &mut Vec<UncoveredEntry>,
+) -> Result<()> {
+    for entry in fs::read_dir(dir).wrap_err_with(|| format!("failed reading {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let rel = if rel_prefix.is_empty() {
+            name
+        } else {
+            format!("{rel_prefix}/{name}")
+        };
+        if path.is_dir() {
+            if subtree_has_included_file(&path, &rel, cli_name, extra)? {
+                collect_uncovered(&path, &rel, cli_name, extra, out)?;
+            } else {
+                out.push(UncoveredEntry {
+                    path: rel,
+                    size_bytes: dir_size(&path),
+                });
+            }
+        } else if !is_allowed(cli_name, Path::new(&rel), extra) {
+            out.push(UncoveredEntry {
+                path: rel,
+                size_bytes: path.metadata().map(|m| m.len()).unwrap_or(0),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn collect_profile_entries(
     cli_dir: &Path,
     cli_name: &str,
     extra: &[String],
 ) -> Result<(Vec<PathBuf>, Vec<UncoveredEntry>)> {
     let mut included = Vec::new();
-    let mut uncovered = Vec::new();
 
     let mut all_files = Vec::new();
     walk_files(cli_dir, &mut all_files)?;
@@ -328,58 +440,8 @@ fn collect_profile_entries(
         }
     }
 
-    // Entradas não cobertas, para o relatório.
-    //
-    // CUIDADO: um diretório de topo NÃO pode ser considerado "coberto" só
-    // porque algum arquivo dentro dele entrou. Em `claude/plugins/`, por
-    // exemplo, três arquivos casam com a allowlist e qualquer outro arquivo
-    // ali não casa. Agregar por diretório com `.any()` faria esses arquivos
-    // sumirem em silêncio — nem no backup, nem no relatório —, destruindo a
-    // única garantia que torna a allowlist aceitável para backup.
-    //
-    // Regra: diretório totalmente descoberto vira UMA linha (com o tamanho
-    // agregado); diretório parcialmente coberto é percorrido e reporta os
-    // arquivos específicos que ficaram de fora.
-    let included_set: std::collections::HashSet<&Path> =
-        included.iter().map(|p| p.as_path()).collect();
-
-    for entry in
-        fs::read_dir(cli_dir).wrap_err_with(|| format!("failed reading {}", cli_dir.display()))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-
-        if path.is_dir() {
-            let mut files = Vec::new();
-            walk_files(&path, &mut files)?;
-            let any_included = files.iter().any(|f| included_set.contains(f.as_path()));
-            if !any_included {
-                // Nada dentro entrou: uma linha só para o diretório inteiro.
-                uncovered.push(UncoveredEntry {
-                    path: name,
-                    size_bytes: dir_size(&path),
-                });
-            } else {
-                // Cobertura parcial: reportar cada arquivo que ficou de fora.
-                for f in files {
-                    if included_set.contains(f.as_path()) {
-                        continue;
-                    }
-                    let rel = f.strip_prefix(cli_dir).unwrap_or(&f);
-                    uncovered.push(UncoveredEntry {
-                        path: rel.to_string_lossy().replace('\\', "/"),
-                        size_bytes: f.metadata().map(|m| m.len()).unwrap_or(0),
-                    });
-                }
-            }
-        } else if !is_allowed(cli_name, Path::new(&name), extra) {
-            uncovered.push(UncoveredEntry {
-                path: name,
-                size_bytes: path.metadata().map(|m| m.len()).unwrap_or(0),
-            });
-        }
-    }
+    let mut uncovered = Vec::new();
+    collect_uncovered(cli_dir, "", cli_name, extra, &mut uncovered)?;
     uncovered.sort_by(|a, b| a.path.cmp(&b.path));
 
     Ok((included, uncovered))
@@ -1107,6 +1169,71 @@ mod tests {
         let ts = timestamp_utc().expect("timestamp");
         assert_eq!(ts.len(), 15, "expected YYYYMMDD-HHMMSS, got {ts}");
         assert_eq!(ts.as_bytes()[8], b'-');
+    }
+
+    #[test]
+    fn test_allowlist_covers_claude_project_memories() {
+        // REGRESSAO: as memorias do Claude vivem fundo em projects/<slug>/memory/
+        // e ficaram fora do backup — exatamente o conteudo que motivou a feature.
+        assert!(is_allowed(
+            "claude",
+            Path::new("projects/-home-user-proj/memory/MEMORY.md"),
+            &[]
+        ));
+        assert!(is_allowed(
+            "claude",
+            Path::new("projects/-home-user-proj/memory/uma-memoria.md"),
+            &[]
+        ));
+        assert!(is_allowed("claude", Path::new("plans/algum-plano.md"), &[]));
+        // Transcricoes de subagente continuam fora.
+        assert!(!is_allowed(
+            "claude",
+            Path::new("projects/-home-user-proj/abc-123/subagents/x.jsonl"),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn test_uncovered_report_aggregates_fully_uncovered_subtrees() {
+        // REGRESSAO: enumerar arquivo a arquivo gerava 45 mil linhas nos perfis reais.
+        let tmp = tempdir().expect("tempdir");
+        let cli_dir = tmp.path().join("claude");
+        // plugins/ e' parcialmente coberto: um manifesto casa, o cache nao.
+        fs::create_dir_all(cli_dir.join("plugins/cache/a/b")).expect("mkdir cache");
+        fs::write(cli_dir.join("plugins/installed_plugins.json"), "{}").expect("w1");
+        fs::write(cli_dir.join("plugins/cache/a/b/x.bin"), "x").expect("w2");
+        fs::write(cli_dir.join("plugins/cache/a/b/y.bin"), "y").expect("w3");
+        fs::write(cli_dir.join("plugins/cache/z.bin"), "z").expect("w4");
+
+        let (_included, uncovered) =
+            collect_profile_entries(&cli_dir, "claude", &[]).expect("collect");
+        let paths: Vec<&str> = uncovered.iter().map(|u| u.path.as_str()).collect();
+
+        assert!(
+            paths.contains(&"plugins/cache"),
+            "subarvore totalmente descoberta deve virar UMA linha; obtido: {paths:?}"
+        );
+        assert!(
+            !paths
+                .iter()
+                .any(|p| p.contains("x.bin") || p.contains("z.bin")),
+            "arquivos dentro de subarvore agregada nao devem ser enumerados; obtido: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn test_uncovered_report_still_names_loose_file_next_to_covered() {
+        let tmp = tempdir().expect("tempdir");
+        let cli_dir = tmp.path().join("claude");
+        fs::create_dir_all(&cli_dir).expect("mkdir");
+        fs::write(cli_dir.join("settings.json"), "{}").expect("w1");
+        fs::write(cli_dir.join("mystery.bin"), "x").expect("w2");
+
+        let (_included, uncovered) =
+            collect_profile_entries(&cli_dir, "claude", &[]).expect("collect");
+        let paths: Vec<&str> = uncovered.iter().map(|u| u.path.as_str()).collect();
+        assert!(paths.contains(&"mystery.bin"), "obtido: {paths:?}");
     }
 
     #[test]
