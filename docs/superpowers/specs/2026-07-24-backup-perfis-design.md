@@ -62,6 +62,15 @@ ficaram de fora, com tamanhos, para o usuário decidir se algo novo precisa entr
 relatório a allowlist seria imprópria para backup; com ele, entrega controle e privacidade
 sem o risco de perda silenciosa.
 
+**O relatório precisa ser legível para cumprir essa função.** Reportar cada arquivo não
+coberto individualmente produz 45.153 linhas nos perfis reais — um relatório desse tamanho
+não é lido, e um relatório que não é lido não neutraliza nada. A regra é reportar as maiores
+subárvores inteiramente não cobertas, não os arquivos folha: o cloak desce na árvore apenas
+enquanto houver conteúdo coberto misturado, e agrega numa linha só assim que encontra um
+subdiretório totalmente de fora. Assim `plugins/cache` e `projects/<slug>/<uuid>/subagents`
+viram uma linha cada, e um arquivo novo e solto ao lado de arquivos cobertos continua
+aparecendo nominalmente.
+
 Allowlist inicial, relativa à raiz de cada CLI dentro do perfil:
 
 ```
@@ -73,6 +82,7 @@ skills/            .agents/
 CLAUDE.md          statusline-command.sh
 plugins/installed_plugins.json         plugins/known_marketplaces.json
 plugins/blocklist.json
+projects/*/memory/                     plans/
 
 # codex
 config.toml        AGENTS.md          hooks.json         memories/
@@ -80,6 +90,18 @@ config.toml        AGENTS.md          hooks.json         memories/
 # nível do perfil e global
 <perfil>/.cloak    config.toml (global do cloak)
 ```
+
+**`projects/*/memory/` é o item mais importante da lista.** As memórias auto-persistidas do
+Claude Code — o "não quero perder minhas memórias" que originou esta feature — vivem em
+`claude/projects/<slug>/memory/*.md`, não na raiz do diretório do CLI. Medido nos perfis
+reais: 288 arquivos, 744 KB, em 34 diretórios. Uma allowlist que só case `*.md` na raiz não
+alcança nenhum deles.
+
+O que fica de fora dentro de `projects/` é o volume: `projects/*/<uuid>/subagents/` são
+transcrições de subagentes (750 arquivos, 115 MB) e seguem o mesmo critério de sessões.
+
+O casador de padrões precisa suportar `*` como segmento completo de caminho para expressar
+`projects/*/memory/`.
 
 A lista de MCP (`.claude.json` → `mcpServers`, `codex/config.toml` → `mcp_servers`) e a
 identidade da conta (`.claude.json` → `oauthAccount`) são lidas para o manifesto e para o
@@ -207,14 +229,22 @@ incluídas.
 4. Imprime o relatório: itens incluídos e itens não cobertos, ambos com tamanhos. Em
    `--dry-run`, encerra aqui.
 5. Gera o tar comprimido em diretório temporário com permissão restrita.
-6. Cifra com `gpg --symmetric`, solicitando a passphrase.
-7. Move o artefato para `output_dir` com `0600` e remove o intermediário.
+6. Cifra com `gpg --symmetric`, solicitando a passphrase, escrevendo em um nome temporário
+   dentro do `output_dir` (já com `0600`).
+7. Renomeia o temporário para o nome final e remove o intermediário. O nome final só passa a
+   existir depois da cifragem completa: se o processo morrer no meio, o que sobra é um
+   temporário reconhecível, nunca um artefato truncado com o nome definitivo. Isso importa
+   porque o `output_dir` costuma ser uma pasta sincronizada — um artefato corrompido com o
+   nome final seria o mais recente do diretório e venceria qualquer escolha por "o último
+   backup".
 8. Executa `upload_command`, se configurado. Falha aqui não invalida o artefato local.
 
 ## Fluxo de restauração
 
 1. Decifra o artefato para diretório temporário com permissão restrita.
-2. Lê e valida o manifesto.
+2. Lê e valida o manifesto. Um `format_version` maior que o suportado aborta com mensagem
+   explícita: um cloak antigo não pode adivinhar a semântica de um formato futuro, e escrever
+   no perfil do usuário com base num palpite é pior que recusar.
 3. Verifica identidade: perfil de destino, conta OAuth e uid. Divergência aborta com
    mensagem explícita e exige `--force`.
 4. Verifica colisão: perfil já existente no destino nunca é sobrescrito sem `--force`.
