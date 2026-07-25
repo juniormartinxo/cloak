@@ -499,8 +499,19 @@ mod tests {
         assert!(resolve_forwarded_args("codex", &[]).is_empty());
     }
 
+    /// Serializa os testes que mexem em `WSL_DISTRO_NAME`.
+    ///
+    /// Variável de ambiente é estado global do processo e os testes rodam em
+    /// paralelo: sem esta trava, um teste executa `remove_var` enquanto o outro
+    /// ainda está afirmando, e a asserção vê `None` de forma intermitente.
+    static WSL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn detects_cursor_wsl_wrapper_only_for_cursor_on_wsl_windows_path() {
+        let _guard = WSL_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         unsafe {
             std::env::set_var("WSL_DISTRO_NAME", "Ubuntu");
         }
@@ -525,6 +536,10 @@ mod tests {
 
     #[test]
     fn derives_profile_specific_cursor_remote_agent_folder_on_wsl() {
+        let _guard = WSL_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         unsafe {
             std::env::set_var("WSL_DISTRO_NAME", "Ubuntu");
         }
