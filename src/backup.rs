@@ -612,13 +612,26 @@ fn run_upload_command(template: &str, archive: &Path) -> Result<()> {
 
 const REWRITE_EXTENSIONS: &[&str] = &["json", "toml", "md", "sh"];
 
-/// Substitui `from` por `to` apenas quando `from` é uma raiz de caminho
-/// completa, não um prefixo de outro nome.
+/// Um caractere que CONTINUA um componente de caminho.
 ///
-/// Um `replace` literal corromperia silenciosamente: com `from = "/home/ana"`,
-/// a string `/home/anastacia/x` viraria `/home/<novo>stacia/x`. Só tratamos
-/// como raiz quando o caractere seguinte encerra o componente — separador,
-/// aspas, fim da string ou espaço.
+/// A checagem de fronteira é definida por exclusão, não por uma lista de
+/// terminadores. Enumerar terminadores falha em silêncio: `REWRITE_EXTENSIONS`
+/// inclui `.sh` e `.md`, onde paths aparecem sem aspas ao redor — crase em
+/// code-span markdown, `)` em link, `;` em shell. Qualquer terminador esquecido
+/// faria a reescrita não acontecer, e o perfil restaurado continuaria apontando
+/// para o home da máquina antiga sem nenhum aviso.
+fn continues_path_component(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '-' | '_' | '.')
+}
+
+/// Substitui `from` por `to` apenas quando `from` é uma raiz de caminho
+/// completa, não parte de outro nome.
+///
+/// Duas fronteiras são exigidas:
+/// - à direita, para que `from = "/home/ana"` não corrompa `/home/anastacia/x`
+///   (que viraria `/home/<novo>stacia/x`);
+/// - à esquerda, para que `/home/old` não case dentro de `/backup/home/old/x`,
+///   que é um caminho distinto e não deve ser reescrito.
 fn replace_path_root(content: &str, from: &str, to: &str) -> String {
     if from.is_empty() {
         return content.to_string();
@@ -630,13 +643,18 @@ fn replace_path_root(content: &str, from: &str, to: &str) -> String {
     while let Some(idx) = rest.find(from) {
         let (before, tail) = rest.split_at(idx);
         let after = &tail[from.len()..];
-        let boundary_ok = match after.chars().next() {
-            None => true,
-            Some(c) => matches!(c, '/' | '"' | '\'' | ' ' | '\\' | ':' | ',' | '\n' | '\r'),
-        };
+
+        let left_ok = before
+            .chars()
+            .next_back()
+            .is_none_or(|c| !continues_path_component(c));
+        let right_ok = after
+            .chars()
+            .next()
+            .is_none_or(|c| !continues_path_component(c));
 
         out.push_str(before);
-        if boundary_ok {
+        if left_ok && right_ok {
             out.push_str(to);
         } else {
             out.push_str(from);
@@ -1178,6 +1196,41 @@ mod tests {
     fn test_replace_path_root_handles_end_of_string() {
         let out = replace_path_root("/home/ana", "/home/ana", "/home/bob");
         assert_eq!(out, "/home/bob");
+    }
+
+    #[test]
+    fn test_replace_path_root_rewrites_in_markdown_and_shell_contexts() {
+        let from = "/home/old";
+        let to = "/home/new";
+        // Crase de code-span markdown.
+        assert_eq!(
+            replace_path_root("`/home/old/x`", from, to),
+            "`/home/new/x`"
+        );
+        // Link markdown.
+        assert_eq!(
+            replace_path_root("[p](/home/old/x)", from, to),
+            "[p](/home/new/x)"
+        );
+        // Shell com ponto-e-virgula.
+        assert_eq!(
+            replace_path_root("export R=/home/old;", from, to),
+            "export R=/home/new;"
+        );
+    }
+
+    #[test]
+    fn test_replace_path_root_ignores_path_nested_under_other_prefix() {
+        // /home/old aqui e' componente intermediario de um caminho distinto.
+        let out = replace_path_root("/backup/home/old/x", "/home/old", "/home/new");
+        assert_eq!(out, "/backup/home/old/x");
+    }
+
+    #[test]
+    fn test_replace_path_root_still_rejects_sibling_prefix() {
+        // Regressao do achado anterior: nao pode casar dentro de nome maior.
+        let out = replace_path_root("/home/anastacia/y", "/home/ana", "/home/bob");
+        assert_eq!(out, "/home/anastacia/y");
     }
 
     #[test]
