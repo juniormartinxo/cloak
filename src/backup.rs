@@ -138,7 +138,6 @@ fn gpg_encrypt(input: &Path, output: &Path, passphrase: Option<&str>) -> Result<
     .wrap_err("failed to encrypt backup archive")
 }
 
-#[allow(dead_code)]
 fn gpg_decrypt(input: &Path, output: &Path, passphrase: Option<&str>) -> Result<()> {
     let input_s = input.to_string_lossy();
     let output_s = output.to_string_lossy();
@@ -164,7 +163,6 @@ fn create_tar_gz(src_dir: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<()> {
     ensure_tool("tar")?;
     let archive_s = archive.to_string_lossy();
@@ -612,6 +610,213 @@ fn run_upload_command(template: &str, archive: &Path) -> Result<()> {
     Ok(())
 }
 
+const REWRITE_EXTENSIONS: &[&str] = &["json", "toml", "md", "sh"];
+
+fn rewrite_paths_in_file(file: &Path, from: &str, to: &str) -> Result<bool> {
+    let is_text = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| REWRITE_EXTENSIONS.contains(&e))
+        .unwrap_or(false);
+    if !is_text {
+        return Ok(false);
+    }
+    let content =
+        fs::read_to_string(file).wrap_err_with(|| format!("failed reading {}", file.display()))?;
+    if !content.contains(from) {
+        return Ok(false);
+    }
+    let updated = content.replace(from, to);
+    fs::write(file, updated).wrap_err_with(|| format!("failed writing {}", file.display()))?;
+    Ok(true)
+}
+
+fn rewrite_tree(dir: &Path, from: &str, to: &str, changed: &mut Vec<String>) -> Result<()> {
+    for entry in fs::read_dir(dir).wrap_err_with(|| format!("failed reading {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            rewrite_tree(&path, from, to, changed)?;
+        } else if rewrite_paths_in_file(&path, from, to)? {
+            changed.push(path.display().to_string());
+        }
+    }
+    Ok(())
+}
+
+pub struct RestoreOptions {
+    pub archive: PathBuf,
+    pub profile: Option<String>,
+    pub force: bool,
+    pub dry_run: bool,
+    pub rewrite_paths: bool,
+}
+
+pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
+    ensure_tool("tar")?;
+    ensure_tool("gpg")?;
+
+    if !opts.archive.exists() {
+        return Err(eyre!("archive not found: {}", opts.archive.display()));
+    }
+
+    // Área de staging temporária.
+    //
+    // Mesma questão descrita em `run_backup`: `tempfile::tempdir()` sai em
+    // 0755 com o umask padrão, e aqui a raiz guarda o conteúdo decifrado do
+    // backup do usuário (dados sensíveis em claro) até ser copiado para o
+    // destino. Trava-se a raiz em 0700 imediatamente após a criação.
+    let staging = tempfile::tempdir().wrap_err("failed creating restore staging dir")?;
+    paths::set_owner_only_dir(staging.path())?;
+    let tar_tmp = staging.path().join("archive.tar.gz");
+    let passphrase = resolve_passphrase();
+    gpg_decrypt(&opts.archive, &tar_tmp, passphrase.as_deref())?;
+
+    let extracted = staging.path().join("extracted");
+    paths::ensure_secure_dir(&extracted)?;
+    extract_tar_gz(&tar_tmp, &extracted)?;
+
+    let manifest_path = extracted.join("manifest.json");
+    let manifest_raw = fs::read_to_string(&manifest_path)
+        .wrap_err("manifest.json missing or unreadable in archive")?;
+    let manifest: Manifest =
+        serde_json::from_str(&manifest_raw).wrap_err("failed parsing manifest.json")?;
+
+    println!("Restore");
+    println!("  origem: {} @ {}", manifest.hostname, manifest.created_at);
+
+    // Identidade: uid do destino.
+    //
+    // `uid` é Option: `None` significa "não foi possível determinar", que é
+    // diferente de "é o uid 0". Tratar desconhecido como verificado seria
+    // fail-open — exatamente o que a checagem existe para impedir. Portanto
+    // qualquer lado desconhecido exige `--force` explícito.
+    let home = dirs::home_dir().ok_or_else(|| eyre!("unable to resolve home directory"))?;
+    let dest_uid = origin_uid(&home);
+    if !opts.force {
+        match (manifest.uid, dest_uid) {
+            (Some(backup_uid), Some(current_uid)) if backup_uid != current_uid => {
+                return Err(eyre!(
+                    "identidade divergente: backup do uid {} sendo restaurado por uid {}; \
+                     use --force para prosseguir",
+                    backup_uid,
+                    current_uid
+                ));
+            }
+            (Some(_), Some(_)) => {}
+            _ => {
+                return Err(eyre!(
+                    "não foi possível verificar a identidade do backup \
+                     (uid de origem ou destino indeterminado); use --force para prosseguir"
+                ));
+            }
+        }
+    }
+
+    let profile_root = paths::profiles_dir()?;
+    let restore_profiles: Vec<&ProfileManifest> = match &opts.profile {
+        Some(name) => {
+            let found = manifest
+                .profiles
+                .iter()
+                .find(|p| &p.name == name)
+                .ok_or_else(|| eyre!("profile '{name}' not present in archive"))?;
+            vec![found]
+        }
+        None => manifest.profiles.iter().collect(),
+    };
+
+    for pm in &restore_profiles {
+        let dest_profile = paths::profile_dir(&pm.name)?;
+        if dest_profile.exists() && !opts.force {
+            return Err(eyre!(
+                "profile '{}' already exists at destination; use --force to overwrite",
+                pm.name
+            ));
+        }
+        // Conta OAuth divergente é aviso de acidente.
+        if let (Some(backup_acc), Some(dest_acc)) =
+            (&pm.oauth_account, account::profile_email(&pm.name))
+        {
+            if backup_acc != &dest_acc && !opts.force {
+                return Err(eyre!(
+                    "conta divergente no perfil '{}': backup {} vs destino {}; use --force",
+                    pm.name,
+                    backup_acc,
+                    dest_acc
+                ));
+            }
+        }
+    }
+
+    if opts.dry_run {
+        println!("  perfis a restaurar: {}", restore_profiles.len());
+        for pm in &restore_profiles {
+            println!("    {} (MCP: {})", pm.name, pm.mcp_servers.join(", "));
+        }
+        println!("dry-run: destino não foi alterado");
+        return Ok(());
+    }
+
+    // Reescrita de paths na área extraída antes de copiar.
+    let extracted_profiles = extracted.join("profiles");
+    if opts.rewrite_paths && extracted_profiles.exists() {
+        let mut changed = Vec::new();
+        let from_root = &manifest.profile_root;
+        let to_root = profile_root.to_string_lossy();
+        rewrite_tree(&extracted_profiles, from_root, &to_root, &mut changed)?;
+        // Também reescrever o $HOME de origem, se diferente.
+        let to_home = home.to_string_lossy();
+        if manifest.home != to_home {
+            rewrite_tree(&extracted_profiles, &manifest.home, &to_home, &mut changed)?;
+        }
+        if !changed.is_empty() {
+            println!("  paths reescritos em {} arquivo(s)", changed.len());
+        }
+    }
+
+    // Copiar cada perfil selecionado para o destino, aplicando permissões.
+    for pm in &restore_profiles {
+        let src = extracted_profiles.join(&pm.name);
+        if !src.exists() {
+            continue;
+        }
+        let dest = paths::profile_dir(&pm.name)?;
+        copy_tree_secure(&src, &dest)?;
+        print_reconstruction_report(pm);
+    }
+
+    Ok(())
+}
+
+fn copy_tree_secure(src: &Path, dest: &Path) -> Result<()> {
+    paths::ensure_secure_dir(dest)?;
+    for entry in fs::read_dir(src).wrap_err_with(|| format!("failed reading {}", src.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let target = dest.join(entry.file_name());
+        if path.is_dir() {
+            copy_tree_secure(&path, &target)?;
+        } else {
+            fs::copy(&path, &target)
+                .wrap_err_with(|| format!("failed copying {}", path.display()))?;
+            paths::set_owner_only_file(&target)?;
+        }
+    }
+    Ok(())
+}
+
+fn print_reconstruction_report(pm: &ProfileManifest) {
+    println!("  perfil '{}' restaurado", pm.name);
+    if !pm.mcp_servers.is_empty() {
+        println!(
+            "    MCP registrados (reconciliados na 1ª execução): {}",
+            pm.mcp_servers.join(", ")
+        );
+    }
+    println!("    plugins/marketplaces serão rebaixados pela CLI na 1ª execução");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -846,6 +1051,37 @@ mod tests {
     fn test_shell_quote_escapes_single_quote() {
         // Aspas simples internas nao podem encerrar o literal.
         assert_eq!(shell_quote("/tmp/it's.gpg"), r#"'/tmp/it'\''s.gpg'"#);
+    }
+
+    #[test]
+    fn test_rewrite_paths_replaces_root_and_reports_change() {
+        let tmp = tempdir().expect("tempdir");
+        let file = tmp.path().join("installed_plugins.json");
+        fs::write(
+            &file,
+            r#"{"installPath":"/home/old/.config/cloak/profiles/x/claude/p"}"#,
+        )
+        .expect("write");
+
+        let changed = rewrite_paths_in_file(
+            &file,
+            "/home/old/.config/cloak/profiles",
+            "/home/new/.config/cloak/profiles",
+        )
+        .expect("rewrite");
+        assert!(changed);
+        let content = fs::read_to_string(&file).expect("read");
+        assert!(content.contains("/home/new/.config/cloak/profiles/x/claude/p"));
+        assert!(!content.contains("/home/old"));
+    }
+
+    #[test]
+    fn test_rewrite_paths_no_match_returns_false() {
+        let tmp = tempdir().expect("tempdir");
+        let file = tmp.path().join("f.json");
+        fs::write(&file, r#"{"k":"/unrelated/path"}"#).expect("write");
+        let changed = rewrite_paths_in_file(&file, "/home/old", "/home/new").expect("rewrite");
+        assert!(!changed);
     }
 
     #[cfg(unix)]

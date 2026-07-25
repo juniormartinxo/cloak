@@ -321,8 +321,23 @@ fn main() -> Result<()> {
                 },
             )?;
         }
-        Commands::Restore { .. } => {
-            return Err(eyre!("restore command not yet implemented"));
+        Commands::Restore {
+            archive,
+            profile,
+            force,
+            dry_run,
+            no_rewrite_paths,
+        } => {
+            backup::run_restore(
+                &loaded.config,
+                backup::RestoreOptions {
+                    archive,
+                    profile,
+                    force,
+                    dry_run,
+                    rewrite_paths: !no_rewrite_paths,
+                },
+            )?;
         }
         Commands::Completions { .. } => unreachable!("handled before config load"),
     }
