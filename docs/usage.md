@@ -248,3 +248,114 @@ CLI.
 Visual example of execution with an explicit profile:
 
 ![Demonstration of cloak running Claude with isolated profiles](../sources/images/cloak_claude.jpg)
+
+## Backup and restore
+
+Use `cloak backup` to generate an encrypted artifact with the configuration and knowledge of one
+or more profiles, and `cloak restore` to bring that artifact back on another machine (or the same
+one, after a reinstall).
+
+```text
+cloak backup  [--profile <name>] [--output <dir>] [--include-credentials] [--dry-run]
+cloak restore <archive> [--profile <name>] [--force] [--dry-run] [--no-rewrite-paths]
+```
+
+Without `--profile`, `cloak backup` includes **all** profiles in a single artifact, and
+`cloak restore` restores every profile present in the artifact.
+
+> **Warning: keep the passphrase safe.** The artifact is always encrypted with
+> `gpg --symmetric` (AES-256). If you lose the passphrase, **the backup becomes unrecoverable** —
+> there is no recovery path. Store the passphrase in a password manager.
+
+### Example workflow
+
+```bash
+# see what would go into the backup, without writing any file
+cloak backup --dry-run
+
+# back up all profiles
+cloak backup --output /path/to/destination
+
+# restore on the new machine
+cloak restore /path/to/cloak-backup-20260725-122130.tar.gz.gpg
+```
+
+### What goes into the backup
+
+Selection uses an allowlist, not a full copy of the profile. It includes:
+
+- `settings.json`, `keybindings.json`, `*.md` files, the `skills/` directory, and `.agents/`;
+- for `claude`: `statusline-command.sh` and the plugin manifests
+  (`plugins/installed_plugins.json`, `plugins/known_marketplaces.json`, `plugins/blocklist.json`);
+- for `codex`: `config.toml`, `hooks.json`, and the `memories/` directory.
+
+Sessions, logs, caches, downloaded plugins, and project history are left out. On real profiles
+this typically shrinks several GB down to a few MB.
+
+On every backup, `cloak` lists what it found in the profile that did **not** make it into the
+artifact — this exists because an allowlist, by nature, omits the unknown, and the report ensures
+an omission surfaces before it turns into data loss. A directory that is entirely outside the
+allowlist shows up as a single line with the aggregate size; a partially-covered directory
+reports each file that was left out.
+
+### Credentials
+
+`claude/.credentials.json` and `codex/auth.json` are **excluded from the backup by default**.
+They are OAuth tokens that expire and can be regenerated in minutes with `cloak login` on the
+destination machine. Use `--include-credentials` to include them explicitly — in that case, a
+leak of the artifact together with the passphrase grants direct access to the accounts, so weigh
+the risk before using this flag.
+
+### Configuration in `config.toml`
+
+The optional `[backup]` block in `~/.config/cloak/config.toml` controls destination and upload:
+
+```toml
+[backup]
+output_dir = "/mnt/c/Users/junior/OneDrive/cloak-backups"
+upload_command = "rclone copy {archive} gdrive:cloak/"
+include = []
+```
+
+- `output_dir`: default output directory. The final destination is resolved in this priority
+  order: `--output` on the command line, then `output_dir` from `config.toml`, then the built-in
+  default `~/.config/cloak/backups`.
+- `upload_command`: command run after generating the artifact, with `{archive}` substituted for
+  the generated file's path (with safe quoting, so paths containing spaces work without manual
+  escaping).
+- `include`: additional file/directory patterns that **add** to the built-in allowlist — they do
+  not remove any default entry.
+
+The artifact name follows the pattern `cloak-backup-<YYYYMMDD-HHMMSS>.tar.gz.gpg` and is created
+with `0600` permissions.
+
+### Non-interactive use (cron/CI)
+
+By default, the encryption passphrase is requested via `pinentry`. To run `cloak backup` without
+interaction (for example, in a cron job or a CI pipeline), set the `CLOAK_BACKUP_PASSPHRASE`
+environment variable — with it set, `gpg` runs in non-interactive mode.
+
+### Restoring a backup
+
+`cloak restore <archive>` decrypts the artifact, validates the manifest, and verifies identity
+(uid and OAuth account) **before** writing anything to the destination. Key points:
+
+- It refuses to overwrite an existing profile; pass `--force` to allow it.
+- If the identity recorded in the manifest cannot be verified, restore also requires `--force` —
+  the failure mode is safe by default, never silent.
+- **It is a merge, not a replacement**: nothing in the destination profile is deleted. Files that
+  already exist at the destination and are not present in the artifact are preserved, and restore
+  explicitly lists those preserved files at the end.
+- It rewrites absolute paths from the origin machine (the source `$HOME` and the source profiles
+  root) inside `.json`, `.toml`, `.md`, and `.sh` files. Use `--no-rewrite-paths` to disable this
+  rewriting.
+- At the end, it reports what was not part of the backup and will be rebuilt automatically by the
+  CLIs on first run (plugins, marketplaces, registered MCP servers).
+- Use `--dry-run` to see the restore plan without touching the destination.
+
+### System dependencies
+
+`cloak backup` and `cloak restore` depend on the `tar`, `gzip`, and `gpg` binaries being on
+`PATH`. Run `cloak doctor` to check: it has a "Backup Tools" section that reports the presence of
+all three and, for `gpg`, confirms it can actually encrypt a test file (not just that the binary
+exists).
