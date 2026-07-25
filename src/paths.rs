@@ -18,7 +18,6 @@ pub fn profiles_dir() -> Result<PathBuf> {
     Ok(cloak_config_dir()?.join("profiles"))
 }
 
-#[allow(dead_code)]
 pub fn backups_dir() -> Result<PathBuf> {
     Ok(cloak_config_dir()?.join("backups"))
 }

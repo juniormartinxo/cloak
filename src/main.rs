@@ -305,8 +305,21 @@ fn main() -> Result<()> {
 
             doctor::run_doctor(&config_for_doctor, &loaded.path, loaded.created)?;
         }
-        Commands::Backup { .. } => {
-            return Err(eyre!("backup command not yet implemented"));
+        Commands::Backup {
+            profile,
+            output,
+            include_credentials,
+            dry_run,
+        } => {
+            backup::run_backup(
+                &loaded.config,
+                backup::BackupOptions {
+                    profile,
+                    output,
+                    include_credentials,
+                    dry_run,
+                },
+            )?;
         }
         Commands::Restore { .. } => {
             return Err(eyre!("restore command not yet implemented"));

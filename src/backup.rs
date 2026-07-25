@@ -8,9 +8,6 @@ use std::{
 use color_eyre::eyre::{eyre, Context, Result};
 use serde::{Deserialize, Serialize};
 
-// `Config` ainda não tem chamador aqui: entra nas Tasks 8/9, quando o
-// manifesto passa a ser montado a partir do fluxo real de `backup`.
-#[allow(unused_imports)]
 use crate::{account, config::Config, paths};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -19,10 +16,8 @@ pub struct UncoveredEntry {
     pub size_bytes: u64,
 }
 
-#[allow(dead_code)]
 const FORMAT_VERSION: u32 = 1;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
     pub format_version: u32,
@@ -36,7 +31,6 @@ pub struct Manifest {
     pub profiles: Vec<ProfileManifest>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfileManifest {
     pub name: String,
@@ -64,7 +58,6 @@ fn read_mcp_servers_at(profile_root: &Path, profile: &str) -> Vec<String> {
 }
 
 /// Wrapper que resolve a raiz padrão de perfis. É o ponto usado pelo resto do código.
-#[allow(dead_code)]
 fn read_mcp_servers(profile: &str) -> Vec<String> {
     match paths::profiles_dir() {
         Ok(root) => read_mcp_servers_at(&root, profile),
@@ -72,7 +65,6 @@ fn read_mcp_servers(profile: &str) -> Vec<String> {
     }
 }
 
-#[allow(dead_code)]
 fn build_profile_manifest(profile: &str, uncovered: Vec<UncoveredEntry>) -> ProfileManifest {
     ProfileManifest {
         name: profile.to_string(),
@@ -84,12 +76,10 @@ fn build_profile_manifest(profile: &str, uncovered: Vec<UncoveredEntry>) -> Prof
 
 const PASSPHRASE_ENV: &str = "CLOAK_BACKUP_PASSPHRASE";
 
-#[allow(dead_code)]
 fn resolve_passphrase() -> Option<String> {
     std::env::var(PASSPHRASE_ENV).ok().filter(|v| !v.is_empty())
 }
 
-#[allow(dead_code)]
 fn ensure_tool(name: &str) -> Result<()> {
     which::which(name)
         .map(|_| ())
@@ -131,7 +121,6 @@ fn run_gpg(args: &[&str], passphrase: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 fn gpg_encrypt(input: &Path, output: &Path, passphrase: Option<&str>) -> Result<()> {
     let input_s = input.to_string_lossy();
     let output_s = output.to_string_lossy();
@@ -157,7 +146,6 @@ fn gpg_decrypt(input: &Path, output: &Path, passphrase: Option<&str>) -> Result<
         .wrap_err("failed to decrypt backup archive")
 }
 
-#[allow(dead_code)]
 fn create_tar_gz(src_dir: &Path, output: &Path) -> Result<()> {
     ensure_tool("tar")?;
     let src_s = src_dir.to_string_lossy();
@@ -196,7 +184,6 @@ fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 fn origin_hostname() -> String {
     Command::new("hostname")
         .output()
@@ -213,20 +200,17 @@ fn origin_hostname() -> String {
 /// falha se tornaria indistinguível de "restaurando como root" e a checagem
 /// de identidade do restore passaria por engano (fail-open). `None` força o
 /// restore a tratar o caso como não-verificável (fail-safe).
-#[allow(dead_code)]
 #[cfg(unix)]
 fn origin_uid(home: &Path) -> Option<u32> {
     use std::os::unix::fs::MetadataExt;
     fs::metadata(home).map(|m| m.uid()).ok()
 }
 
-#[allow(dead_code)]
 #[cfg(not(unix))]
 fn origin_uid(_home: &Path) -> Option<u32> {
     None
 }
 
-#[allow(dead_code)]
 fn timestamp_utc() -> Result<String> {
     let output = Command::new("date")
         .args(["-u", "+%Y%m%d-%H%M%S"])
@@ -250,7 +234,6 @@ const COMMON_ALLOW: &[&str] = &[
     ".agents/",
 ];
 
-#[allow(dead_code)]
 fn allowlist_patterns(cli_name: &str) -> Vec<&'static str> {
     let mut patterns: Vec<&'static str> = COMMON_ALLOW.to_vec();
     match cli_name {
@@ -286,7 +269,6 @@ fn matches_pattern(pattern: &str, rel: &str) -> bool {
     rel == pattern
 }
 
-#[allow(dead_code)]
 fn is_allowed(cli_name: &str, rel: &Path, extra: &[String]) -> bool {
     let rel_str = rel.to_string_lossy().replace('\\', "/");
     let builtin = allowlist_patterns(cli_name);
@@ -325,7 +307,6 @@ fn walk_files(current: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 fn collect_profile_entries(
     cli_dir: &Path,
     cli_name: &str,
@@ -398,6 +379,219 @@ fn collect_profile_entries(
     uncovered.sort_by(|a, b| a.path.cmp(&b.path));
 
     Ok((included, uncovered))
+}
+
+pub struct BackupOptions {
+    pub profile: Option<String>,
+    pub output: Option<PathBuf>,
+    pub include_credentials: bool,
+    pub dry_run: bool,
+}
+
+const CREDENTIAL_FILES: &[(&str, &str)] =
+    &[("claude", ".credentials.json"), ("codex", "auth.json")];
+
+fn resolve_output_dir(config: &Config, opts: &BackupOptions) -> Result<PathBuf> {
+    if let Some(dir) = &opts.output {
+        return Ok(dir.clone());
+    }
+    if let Some(backup) = &config.backup {
+        if let Some(dir) = &backup.output_dir {
+            return Ok(PathBuf::from(dir));
+        }
+    }
+    paths::backups_dir()
+}
+
+fn target_profiles(opts: &BackupOptions) -> Result<Vec<String>> {
+    let root = paths::profiles_dir()?;
+    let mut profiles = Vec::new();
+    if let Some(p) = &opts.profile {
+        paths::validate_profile_name(p)?;
+        profiles.push(p.clone());
+        return Ok(profiles);
+    }
+    if root.exists() {
+        for entry in
+            fs::read_dir(&root).wrap_err_with(|| format!("failed reading {}", root.display()))?
+        {
+            let entry = entry?;
+            if entry.path().is_dir() {
+                if let Some(name) = entry.file_name().to_str() {
+                    profiles.push(name.to_string());
+                }
+            }
+        }
+    }
+    profiles.sort();
+    if profiles.is_empty() {
+        return Err(eyre!("no profiles found to back up"));
+    }
+    Ok(profiles)
+}
+
+pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
+    ensure_tool("tar")?;
+    ensure_tool("gpg")?;
+
+    let profiles = target_profiles(&opts)?;
+    let profile_root = paths::profiles_dir()?;
+    let home = dirs::home_dir().ok_or_else(|| eyre!("unable to resolve home directory"))?;
+    let extra_includes = config
+        .backup
+        .as_ref()
+        .map(|b| b.include.clone())
+        .unwrap_or_default();
+
+    // Área de staging temporária (0700).
+    let staging = tempfile::tempdir().wrap_err("failed to create staging dir")?;
+    let staging_profiles = staging.path().join("profiles");
+    paths::ensure_secure_dir(&staging_profiles)?;
+
+    let mut profile_manifests = Vec::new();
+
+    println!("Backup");
+    for profile in &profiles {
+        let profile_dir = paths::profile_dir(profile)?;
+        if !profile_dir.exists() {
+            return Err(eyre!("profile '{profile}' does not exist"));
+        }
+        let mut all_uncovered = Vec::new();
+
+        for entry in fs::read_dir(&profile_dir)
+            .wrap_err_with(|| format!("failed reading {}", profile_dir.display()))?
+        {
+            let entry = entry?;
+            let cli_path = entry.path();
+            if !cli_path.is_dir() {
+                continue;
+            }
+            let cli_name = entry.file_name().to_string_lossy().into_owned();
+            let (included, uncovered) =
+                collect_profile_entries(&cli_path, &cli_name, &extra_includes)?;
+
+            for src in included {
+                let rel = src.strip_prefix(&profile_root).unwrap_or(&src);
+                let dest = staging_profiles.join(rel);
+                if let Some(parent) = dest.parent() {
+                    fs::create_dir_all(parent)
+                        .wrap_err_with(|| format!("failed creating {}", parent.display()))?;
+                }
+                fs::copy(&src, &dest)
+                    .wrap_err_with(|| format!("failed copying {}", src.display()))?;
+            }
+
+            for u in uncovered {
+                all_uncovered.push(UncoveredEntry {
+                    path: format!("{cli_name}/{}", u.path),
+                    size_bytes: u.size_bytes,
+                });
+            }
+        }
+
+        // Credenciais: incluídas apenas com a flag.
+        if opts.include_credentials {
+            for (cli_name, file) in CREDENTIAL_FILES {
+                let src = profile_dir.join(cli_name).join(file);
+                if src.exists() {
+                    let rel = src.strip_prefix(&profile_root).unwrap_or(&src);
+                    let dest = staging_profiles.join(rel);
+                    if let Some(parent) = dest.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    fs::copy(&src, &dest)?;
+                }
+            }
+        }
+
+        print_backup_profile_report(profile, &all_uncovered);
+        profile_manifests.push(build_profile_manifest(profile, all_uncovered));
+    }
+
+    // Config global do cloak.
+    let global_config = paths::config_file_path()?;
+    if global_config.exists() {
+        fs::copy(&global_config, staging.path().join("config.toml"))
+            .wrap_err("failed copying global config.toml")?;
+    }
+
+    let manifest = Manifest {
+        format_version: FORMAT_VERSION,
+        cloak_version: env!("CARGO_PKG_VERSION").to_string(),
+        created_at: timestamp_utc()?,
+        hostname: origin_hostname(),
+        uid: origin_uid(&home),
+        home: home.to_string_lossy().into_owned(),
+        profile_root: profile_root.to_string_lossy().into_owned(),
+        include_credentials: opts.include_credentials,
+        profiles: profile_manifests,
+    };
+    let manifest_json =
+        serde_json::to_string_pretty(&manifest).wrap_err("failed serializing manifest")?;
+    fs::write(staging.path().join("manifest.json"), manifest_json)
+        .wrap_err("failed writing manifest")?;
+
+    if opts.dry_run {
+        println!("dry-run: nenhum artefato gerado");
+        return Ok(());
+    }
+
+    // tar.gz intermediário e cifragem.
+    let output_dir = resolve_output_dir(config, &opts)?;
+    paths::ensure_secure_dir(&output_dir)?;
+    let filename = format!("cloak-backup-{}.tar.gz.gpg", manifest.created_at);
+    let final_path = output_dir.join(&filename);
+
+    let tar_tmp = staging.path().join("archive.tar.gz");
+    create_tar_gz(staging.path(), &tar_tmp)?;
+
+    let passphrase = resolve_passphrase();
+    if let Err(e) = gpg_encrypt(&tar_tmp, &final_path, passphrase.as_deref()) {
+        let _ = fs::remove_file(&final_path);
+        return Err(e);
+    }
+    let _ = fs::remove_file(&tar_tmp);
+    paths::set_owner_only_file(&final_path)?;
+
+    println!("Artefato: {}", final_path.display());
+
+    // Upload opcional.
+    if let Some(backup) = &config.backup {
+        if let Some(cmd_template) = &backup.upload_command {
+            run_upload_command(cmd_template, &final_path)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn print_backup_profile_report(profile: &str, uncovered: &[UncoveredEntry]) {
+    println!("  perfil: {profile}");
+    if uncovered.is_empty() {
+        println!("    (tudo coberto pela allowlist)");
+        return;
+    }
+    println!("    NÃO incluído (fora da allowlist):");
+    for u in uncovered {
+        println!("      {} ({} bytes)", u.path, u.size_bytes);
+    }
+}
+
+fn run_upload_command(template: &str, archive: &Path) -> Result<()> {
+    let rendered = template.replace("{archive}", &archive.to_string_lossy());
+    println!("upload: {rendered}");
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(&rendered)
+        .status()
+        .wrap_err("failed to run upload_command")?;
+    if !status.success() {
+        return Err(eyre!(
+            "upload_command failed (status {status}); local artifact kept at {}",
+            archive.display()
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
