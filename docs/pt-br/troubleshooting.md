@@ -191,7 +191,7 @@ arquivos exclusivos do destino.
 Não use `--force` para contornar este erro:
 
 ```text
-este artefato usa o formato de backup vN e este cloak suporta ate vM
+this artifact uses backup format vN and this cloak supports up to vM
 ```
 
 Uma `format_version` mais nova nunca é ignorada. Atualize o `cloak` para uma versão compatível com

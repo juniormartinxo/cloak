@@ -190,7 +190,7 @@ files.
 Do not use `--force` to work around this error:
 
 ```text
-este artefato usa o formato de backup vN e este cloak suporta ate vM
+this artifact uses backup format vN and this cloak supports up to vM
 ```
 
 A newer `format_version` is never bypassed. Update `cloak` to a version that supports the artifact.

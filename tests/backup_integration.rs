@@ -301,7 +301,7 @@ config_dir_env = "CLAUDE_CONFIG_DIR"
             "o plano precisa nomear o perfil:\n{stdout}"
         );
         assert!(
-            stdout.contains("conflito"),
+            stdout.contains("conflict"),
             "o conflito detectado precisa aparecer no plano:\n{stdout}"
         );
         assert!(
@@ -859,7 +859,7 @@ config_dir_env = "CLAUDE_CONFIG_DIR"
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            !stdout.contains("(tudo coberto pela allowlist)"),
+            !stdout.contains("(everything covered by the allowlist)"),
             "report must not claim full coverage while a loose non-.cloak \
              invariant would be violated if .cloak were missing; got:\n{stdout}"
         );
@@ -1237,7 +1237,7 @@ config_dir_env = "CLAUDE_CONFIG_DIR"
             "o perfil pulado precisa ser nomeado:\n{stderr}"
         );
         assert!(
-            stderr.contains("nenhum perfil foi restaurado"),
+            stderr.contains("no profile was restored"),
             "o motivo precisa ser explicito:\n{stderr}"
         );
     }
@@ -1494,7 +1494,7 @@ config_dir_env = "CLAUDE_CONFIG_DIR"
                 String::from_utf8_lossy(&output.stdout)
             );
             assert!(
-                stderr.contains("formato de backup"),
+                stderr.contains("backup format"),
                 "a mensagem precisa explicar o motivo (extra: {extra:?}):\n{stderr}"
             );
             assert!(

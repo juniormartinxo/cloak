@@ -429,7 +429,7 @@ fn collect_uncovered(
                 // Um diretório SEM arquivos faz `subtree_has_included_file`
                 // devolver false, então um `claude/skills/` vazio era agregado
                 // como não coberto e o relatório imprimia
-                // `claude/skills (0 bytes)` sob "NÃO incluído (fora da
+                // `claude/skills (0 bytes)` sob "NOT included (outside the
                 // allowlist)" — mesmo `skills/` sendo padrão built-in. Falso
                 // positivo treina o usuário a ignorar o relatório, que é a
                 // única defesa contra omissão silenciosa. Um padrão de
@@ -696,7 +696,7 @@ fn plan_profile_backup(
         }
         let shown = src.strip_prefix(&profile_dir).unwrap_or(src);
         unreadable.push(format!(
-            "{} (arquivo inacessivel)",
+            "{} (unreadable file)",
             shown.to_string_lossy().replace('\\', "/")
         ));
         false
@@ -739,7 +739,7 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
     }
 
     if opts.dry_run {
-        println!("dry-run: nenhum artefato gerado");
+        println!("dry-run: no artifact generated");
         return Ok(());
     }
 
@@ -840,7 +840,7 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
         .wrap_err_with(|| format!("failed finalizing artifact at {}", final_path.display()))?;
     let _ = fs::remove_file(&tar_tmp);
 
-    println!("Artefato: {}", final_path.display());
+    println!("Artifact: {}", final_path.display());
 
     // Upload opcional.
     if let Some(backup) = &config.backup {
@@ -853,12 +853,12 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
 }
 
 fn print_backup_profile_report(profile: &str, uncovered: &[UncoveredEntry]) {
-    println!("  perfil: {profile}");
+    println!("  profile: {profile}");
     if uncovered.is_empty() {
-        println!("    (tudo coberto pela allowlist)");
+        println!("    (everything covered by the allowlist)");
         return;
     }
-    println!("    NÃO incluído (fora da allowlist):");
+    println!("    NOT included (outside the allowlist):");
     for u in uncovered {
         println!("      {} ({} bytes)", u.path, u.size_bytes);
     }
@@ -873,9 +873,9 @@ fn print_unreadable_report(profile: &str, unreadable: &[String]) {
         return;
     }
     eprintln!(
-        "  AVISO: {} arquivo(s) do perfil '{profile}' casavam com a allowlist mas nao \
-         puderam ser lidos e FICARAM DE FORA do artefato (symlink quebrado ou arquivo \
-         removido durante o backup):",
+        "  WARNING: {} file(s) in profile '{profile}' matched the allowlist but could \
+         not be read and were LEFT OUT of the artifact (broken symlink, or file \
+         removed during the backup):",
         unreadable.len()
     );
     for item in unreadable {
@@ -1057,8 +1057,8 @@ pub struct RestoreOptions {
 fn ensure_supported_format(format_version: u32) -> Result<()> {
     if format_version > FORMAT_VERSION {
         return Err(eyre!(
-            "este artefato usa o formato de backup v{} e este cloak suporta ate v{}; \
-             atualize o cloak para restaurar",
+            "this artifact uses backup format v{} and this cloak supports up to v{}; \
+             update cloak to restore it",
             format_version,
             FORMAT_VERSION
         ));
@@ -1099,7 +1099,7 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
     ensure_supported_format(manifest.format_version)?;
 
     println!("Restore");
-    println!("  origem: {} @ {}", manifest.hostname, manifest.created_at);
+    println!("  origin: {} @ {}", manifest.hostname, manifest.created_at);
 
     // Identidade: uid do destino.
     //
@@ -1165,7 +1165,7 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
         {
             if backup_acc != &dest_acc {
                 conflicts.push(format!(
-                    "conta divergente no perfil '{}': backup {} vs destino {}; use --force",
+                    "account mismatch in profile '{}': backup {} vs destination {}; use --force",
                     pm.name, backup_acc, dest_acc
                 ));
             }
@@ -1184,11 +1184,11 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
         print_restore_plan(&plans, identity_issue.as_deref(), opts.force);
         if extracted_config.exists() {
             println!(
-                "  o config.toml global do artefato seria gravado como \
-                 config.toml.from-backup (referência, não mesclado)"
+                "  the artifact's global config.toml would be written as \
+                 config.toml.from-backup (reference, not merged)"
             );
         }
-        println!("dry-run: destino não foi alterado");
+        println!("dry-run: destination was not modified");
         return Ok(());
     }
 
@@ -1229,17 +1229,17 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
         }
 
         if !changed.is_empty() {
-            println!("  paths reescritos em {} arquivo(s)", changed.len());
+            println!("  paths rewritten in {} file(s)", changed.len());
         }
         // As duas passadas veem os mesmos arquivos ilegíveis; reportar uma vez.
         skipped.sort();
         skipped.dedup();
         if !skipped.is_empty() {
             eprintln!(
-                "  AVISO: {} arquivo(s) nao puderam ser lidos como texto e foram \
-                 restaurados SEM reescrita de paths — podem continuar apontando \
-                 para a maquina de origem (use --no-rewrite-paths para pular a \
-                 reescrita de todos):",
+                "  WARNING: {} file(s) could not be read as text and were restored \
+                 WITHOUT path rewriting — they may still point at the origin \
+                 machine (use --no-rewrite-paths to skip rewriting for every \
+                 file):",
                 skipped.len()
             );
             for detail in &skipped {
@@ -1261,8 +1261,8 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
         // `profiles/<nome>/` nunca chega a ser criado no payload.
         if !src.exists() {
             eprintln!(
-                "  AVISO: perfil '{}' esta' no manifesto mas nao tem diretorio no \
-                 artefato (profiles/{} ausente); NADA foi restaurado para ele",
+                "  WARNING: profile '{}' is in the manifest but has no directory in \
+                 the artifact (profiles/{} missing); NOTHING was restored for it",
                 pm.name, pm.name
             );
             skipped_profiles.push(pm.name.clone());
@@ -1283,21 +1283,21 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
     // que checa `$?` acreditar que o restore aconteceu.
     if restored == 0 {
         let detail = if skipped_profiles.is_empty() {
-            "o manifesto nao lista nenhum perfil".to_string()
+            "the manifest lists no profiles".to_string()
         } else {
             format!(
-                "sem conteudo no artefato para: {}",
+                "no content in the artifact for: {}",
                 skipped_profiles.join(", ")
             )
         };
         return Err(eyre!(
-            "nenhum perfil foi restaurado ({detail}); o artefato pode estar truncado \
-             ou ter sido gerado por uma versao do cloak que nao cobria esses perfis"
+            "no profile was restored ({detail}); the artifact may be truncated, or may \
+             have been produced by a cloak version that did not cover these profiles"
         ));
     }
     if !skipped_profiles.is_empty() {
         eprintln!(
-            "  {} de {} perfil(is) do manifesto foram pulados: {}",
+            "  {} of {} profile(s) in the manifest were skipped: {}",
             skipped_profiles.len(),
             restore_profiles.len(),
             skipped_profiles.join(", ")
@@ -1308,8 +1308,8 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
     // arquivo novo para trás.
     if let Some(reference) = restore_global_config_reference(&extracted_config)? {
         println!(
-            "  config.toml global do artefato gravado em {} — referência, \
-             NÃO mesclado; compare e aplique à mão o que quiser",
+            "  the artifact's global config.toml was written to {} — reference, \
+             NOT merged; compare and apply by hand whatever you want",
             reference.display()
         );
     }
@@ -1358,28 +1358,28 @@ fn print_restore_plan(
     identity_issue: Option<&str>,
     force: bool,
 ) {
-    println!("  perfis a restaurar: {}", plans.len());
+    println!("  profiles to restore: {}", plans.len());
     let mut needs_force = false;
     if let Some(issue) = identity_issue {
-        println!("  conflito de identidade: {issue}");
+        println!("  identity conflict: {issue}");
         needs_force = true;
     }
     for (pm, conflicts, has_content) in plans {
         println!("    {} (MCP: {})", pm.name, pm.mcp_servers.join(", "));
         if !has_content {
             println!(
-                "      AVISO: o artefato nao tem conteudo para este perfil \
-                 (profiles/{} ausente); nada seria restaurado",
+                "      WARNING: the artifact has no content for this profile \
+                 (profiles/{} missing); nothing would be restored",
                 pm.name
             );
         }
         for conflict in conflicts {
-            println!("      conflito: {conflict}");
+            println!("      conflict: {conflict}");
             needs_force = true;
         }
     }
     if needs_force && !force {
-        println!("  → um restore real destes conflitos exigiria --force");
+        println!("  → a real restore with these conflicts would require --force");
     }
 }
 
@@ -1466,7 +1466,7 @@ fn print_preserved_report(profile: &str, preserved: &[UncoveredEntry]) {
         return;
     }
     println!(
-        "    {} item(ns) já existiam no destino e NÃO estavam no backup — preservados:",
+        "    {} item(s) already existed at the destination and were NOT in the backup — preserved:",
         preserved.len()
     );
     for entry in preserved {
@@ -1526,14 +1526,14 @@ fn copy_tree_secure(src: &Path, dest: &Path) -> Result<()> {
 }
 
 fn print_reconstruction_report(pm: &ProfileManifest) {
-    println!("  perfil '{}' restaurado", pm.name);
+    println!("  profile '{}' restored", pm.name);
     if !pm.mcp_servers.is_empty() {
         println!(
-            "    MCP registrados (reconciliados na 1ª execução): {}",
+            "    registered MCPs (reconciled on first run): {}",
             pm.mcp_servers.join(", ")
         );
     }
-    println!("    plugins/marketplaces serão rebaixados pela CLI na 1ª execução");
+    println!("    plugins/marketplaces will be re-fetched by the CLI on first run");
 }
 
 #[cfg(test)]
@@ -1635,7 +1635,7 @@ mod tests {
             "a mensagem precisa nomear a versao do artefato: {msg}"
         );
         assert!(
-            msg.contains("atualize o cloak"),
+            msg.contains("update cloak"),
             "a mensagem precisa dizer o que fazer: {msg}"
         );
     }

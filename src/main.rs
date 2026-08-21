@@ -1337,12 +1337,12 @@ fn run_permission_questionnaire(
 
     println!(
         "{}",
-        format_main_heading(&format!("Permissoes para '{agent}'"))
+        format_main_heading(&format!("Permissions for '{agent}'"))
     );
-    print_detail_line("Politica atual", "questionario interativo guiado");
+    print_detail_line("Current policy", "guided interactive questionnaire");
     print_detail_line(
-        "Observacao",
-        "Comandos perigosos continuam bloqueados por padrao e exigem allowlist manual.",
+        "Note",
+        "Dangerous commands stay blocked by default and require manual allowlisting.",
     );
     println!();
 
@@ -1373,7 +1373,7 @@ fn resolve_permission_agent(
     let candidates = available_agents(cfg);
     if candidates.is_empty() {
         return Err(eyre!(
-            "nenhum agente conhecido foi configurado ainda. use --agent <nome> para configurar um"
+            "no known agent has been configured yet; use --agent <name> to configure one"
         ));
     }
 
@@ -1382,15 +1382,15 @@ fn resolve_permission_agent(
     }
 
     if !is_interactive_terminal() {
-        return Err(eyre!("--agent e obrigatorio em modo nao interativo"));
+        return Err(eyre!("--agent is required in non-interactive mode"));
     }
 
-    println!("Escolha um agente:");
+    println!("Choose an agent:");
     for (index, name) in candidates.iter().enumerate() {
         println!("  [{}] {}", index + 1, name);
     }
 
-    print!("Digite o numero (1-{}): ", candidates.len());
+    print!("Enter a number (1-{}): ", candidates.len());
     io::stdout().flush()?;
 
     let mut input = String::new();
@@ -1398,10 +1398,10 @@ fn resolve_permission_agent(
     let choice = input
         .trim()
         .parse::<usize>()
-        .map_err(|_| eyre!("selecao invalida"))?;
+        .map_err(|_| eyre!("invalid selection"))?;
 
     if choice == 0 || choice > candidates.len() {
-        return Err(eyre!("selecao fora do intervalo"));
+        return Err(eyre!("selection out of range"));
     }
 
     Ok(candidates[choice - 1].clone())
@@ -1425,45 +1425,45 @@ fn ask_permissions(
     agent: &str,
     current: &config::AgentPermissions,
 ) -> Result<config::AgentPermissions> {
-    println!("{}", format_section_title(&format!("Agente: {}", agent)));
-    println!("Responda ao questionario abaixo.");
-    println!("Use 's' para sim, 'n' para nao e Enter para manter o valor atual.");
+    println!("{}", format_section_title(&format!("Agent: {}", agent)));
+    println!("Answer the questions below.");
+    println!("Use 'y' for yes, 'n' for no, and Enter to keep the current value.");
     println!();
 
     let allow_shell = prompt_bool(
         1,
         6,
-        "Permitir acesso ao shell",
-        "Controla a execucao de comandos de shell como bash, sh, zsh e similares.",
+        "Allow shell access",
+        "Controls execution of shell commands such as bash, sh, zsh and similar.",
         current.allow_shell,
     )?;
     let allow_file_write = prompt_bool(
         2,
         6,
-        "Permitir operacoes de escrita em arquivos",
-        "Controla comandos que criam, alteram ou removem arquivos e diretorios, como cp, mkdir e install. Comandos perigosos como rm, mv, chmod e dd continuam bloqueados por padrao e exigem liberacao manual na allowlist.",
+        "Allow file write operations",
+        "Controls commands that create, change or remove files and directories, such as cp, mkdir and install. Dangerous commands such as rm, mv, chmod and dd stay blocked by default and require manual allowlisting.",
         current.allow_file_write,
     )?;
     let allow_network = prompt_bool(
         3,
         6,
-        "Permitir acesso a rede",
-        "Controla comandos que podem acessar recursos externos, como curl, wget, git, npm, pnpm, node e python.",
+        "Allow network access",
+        "Controls commands that can reach external resources, such as curl, wget, git, npm, pnpm, node and python.",
         current.allow_network,
     )?;
     let include_dangerous_in_deny = prompt_bool(
         4,
         6,
-        "Adicionar comandos perigosos em deny_commands",
-        "Se ativado, rm, rmdir, mv, dd, truncate, chmod, chown e chgrp serao adicionados explicitamente em deny_commands no TOML salvo.",
+        "Add dangerous commands to deny_commands",
+        "When enabled, rm, rmdir, mv, dd, truncate, chmod, chown and chgrp are added explicitly to deny_commands in the saved TOML.",
         deny_commands_contain_all_dangerous(current),
     )?;
 
     let allowed_commands = prompt_command_list(
         5,
         6,
-        "Comandos de topo explicitamente permitidos",
-        "Informe uma lista separada por virgula. Comandos perigosos so executam se forem adicionados aqui manualmente e nao estiverem bloqueados em deny_commands.",
+        "Explicitly allowed top-level commands",
+        "Provide a comma-separated list. Dangerous commands only run when added here manually and not blocked in deny_commands.",
         &current.allowed_commands,
     )?;
     let deny_current = if include_dangerous_in_deny {
@@ -1474,8 +1474,8 @@ fn ask_permissions(
     let deny_commands = prompt_command_list(
         6,
         6,
-        "Comandos de topo explicitamente bloqueados",
-        "Informe uma lista separada por virgula para negar comandos especificos, mesmo quando outras permissoes estiverem liberadas.",
+        "Explicitly blocked top-level commands",
+        "Provide a comma-separated list to deny specific commands, even when other permissions are granted.",
         &deny_current,
     )?;
 
@@ -1494,7 +1494,7 @@ fn ask_permissions(
     let overlapping = overlap(&allowed_commands, &deny_commands);
     if !overlapping.is_empty() {
         return Err(eyre!(
-            "ha comandos repetidos entre permitidos e bloqueados: {}",
+            "commands repeated between allowed and blocked: {}",
             overlapping.join(", ")
         ));
     }
@@ -1509,7 +1509,7 @@ fn ask_permissions(
 }
 
 fn read_line_edit(prompt: &str, initial: &str) -> Result<String> {
-    let mut editor = DefaultEditor::new().wrap_err("falha ao iniciar editor de linha")?;
+    let mut editor = DefaultEditor::new().wrap_err("failed to start the line editor")?;
     let result = if initial.is_empty() {
         editor.readline(prompt)
     } else {
@@ -1517,8 +1517,8 @@ fn read_line_edit(prompt: &str, initial: &str) -> Result<String> {
     };
     match result {
         Ok(line) => Ok(line),
-        Err(ReadlineError::Interrupted) => Err(eyre!("entrada cancelada (Ctrl-C)")),
-        Err(ReadlineError::Eof) => Err(eyre!("entrada encerrada (Ctrl-D)")),
+        Err(ReadlineError::Interrupted) => Err(eyre!("input cancelled (Ctrl-C)")),
+        Err(ReadlineError::Eof) => Err(eyre!("input closed (Ctrl-D)")),
         Err(err) => Err(eyre!(err)),
     }
 }
@@ -1530,25 +1530,27 @@ fn prompt_bool(
     description: &str,
     default: bool,
 ) -> Result<bool> {
-    let default_suffix = if default { "[S/n]" } else { "[s/N]" };
+    let default_suffix = if default { "[Y/n]" } else { "[y/N]" };
     println!("{}", format_prompt_question(step, total, question));
     println!("{}", format_prompt_description(description));
     println!(
         "{}",
-        format_prompt_meta_line("Atual", &format_permission_value(default))
+        format_prompt_meta_line("Current", &format_permission_value(default))
     );
     let prompt = format!(
         "{} ",
-        format_prompt_input(&format!("Resposta {default_suffix}:"))
+        format_prompt_input(&format!("Answer {default_suffix}:"))
     );
     let input = read_line_edit(&prompt, "")?;
     let answer = input.trim().to_ascii_lowercase();
 
     match answer.as_str() {
         "" => Ok(default),
+        // "s"/"sim" seguem aceitos como apelido: o prompt passou a ingles,
+        // mas quebrar o habito de quem ja usa a CLI nao traz ganho nenhum.
         "s" | "sim" | "y" | "yes" => Ok(true),
         "n" | "no" => Ok(false),
-        _ => Err(eyre!("resposta invalida: use s ou n")),
+        _ => Err(eyre!("invalid answer: use y or n")),
     }
 }
 
@@ -1560,20 +1562,20 @@ fn prompt_command_list(
     current: &[String],
 ) -> Result<Vec<String>> {
     let current_label = if current.is_empty() {
-        "<nenhum>".to_string()
+        "<none>".to_string()
     } else {
         current.join(", ")
     };
     println!("{}", format_prompt_question(step, total, question));
     println!("{}", format_prompt_description(description));
-    println!("{}", format_prompt_meta_line("Atual", &current_label));
+    println!("{}", format_prompt_meta_line("Current", &current_label));
     println!(
         "{}",
         format_prompt_hint(
-            "Edite a lista (setas, Home/End funcionam). Enter vazio mantem o valor atual. '-' limpa a lista."
+            "Edit the list (arrows, Home/End work). Empty Enter keeps the current value. '-' clears the list."
         )
     );
-    let prompt = format!("{} ", format_prompt_input("Lista:"));
+    let prompt = format!("{} ", format_prompt_input("List:"));
     let initial = if current.is_empty() {
         String::new()
     } else {
@@ -1604,7 +1606,7 @@ fn normalize_command_list(values: Vec<String>) -> Result<Vec<String>> {
 
     for value in values {
         if value.starts_with('-') {
-            return Err(eyre!("o comando nao pode comecar com '-': {value}"));
+            return Err(eyre!("the command cannot start with '-': {value}"));
         }
         if !normalized.iter().any(|existing| existing == &value) {
             normalized.push(value);
@@ -1659,39 +1661,36 @@ fn print_agent_permissions(
     config_path: &Path,
 ) -> Result<()> {
     println!();
-    println!("{}", format_section_title("Permissoes salvas"));
-    print_detail_line("Agente", agent);
+    println!("{}", format_section_title("Saved permissions"));
+    print_detail_line("Agent", agent);
     print_detail_line("Shell", bool_status_label(permissions.allow_shell));
     print_detail_line(
-        "Escrita em arquivos",
+        "File writes",
         bool_status_label(permissions.allow_file_write),
     );
-    print_detail_line("Rede", bool_status_label(permissions.allow_network));
+    print_detail_line("Network", bool_status_label(permissions.allow_network));
 
     if permissions.allowed_commands.is_empty() {
-        print_detail_line("Comandos permitidos", "<todos os nao perigosos>");
+        print_detail_line("Allowed commands", "<all non-dangerous>");
     } else {
-        print_detail_line(
-            "Comandos permitidos",
-            &permissions.allowed_commands.join(", "),
-        );
+        print_detail_line("Allowed commands", &permissions.allowed_commands.join(", "));
     }
 
     if permissions.deny_commands.is_empty() {
-        print_detail_line("Comandos bloqueados", "<nenhum>");
+        print_detail_line("Blocked commands", "<none>");
     } else {
-        print_detail_line("Comandos bloqueados", &permissions.deny_commands.join(", "));
+        print_detail_line("Blocked commands", &permissions.deny_commands.join(", "));
     }
 
-    print_detail_line("Comandos perigosos", dangerous_commands_summary());
-    println!("Salvo na configuracao.");
+    print_detail_line("Dangerous commands", dangerous_commands_summary());
+    println!("Saved to the configuration.");
     println!();
-    println!("{}", format_section_title("config.toml salvo"));
-    print_detail_line("Arquivo", &display_path(config_path));
+    println!("{}", format_section_title("saved config.toml"));
+    print_detail_line("File", &display_path(config_path));
     println!();
 
     let raw = fs::read_to_string(config_path)
-        .wrap_err_with(|| format!("falha ao ler {}", config_path.display()))?;
+        .wrap_err_with(|| format!("failed reading {}", config_path.display()))?;
     print!("{raw}");
     if !raw.ends_with('\n') {
         println!();
@@ -1702,14 +1701,14 @@ fn print_agent_permissions(
 
 fn bool_status_label(value: bool) -> &'static str {
     if value {
-        "permitido"
+        "allowed"
     } else {
-        "bloqueado"
+        "blocked"
     }
 }
 
 fn dangerous_commands_summary() -> &'static str {
-    "rm, rmdir, mv, dd, truncate, chmod, chown e chgrp exigem allowlist manual"
+    "rm, rmdir, mv, dd, truncate, chmod, chown and chgrp require manual allowlisting"
 }
 
 fn delete_profile(name: &str, yes: bool, loaded: &config::LoadedConfig) -> Result<()> {
