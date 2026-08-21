@@ -1536,6 +1536,33 @@ fn print_reconstruction_report(pm: &ProfileManifest) {
     println!("    plugins/marketplaces will be re-fetched by the CLI on first run");
 }
 
+/// Serializa os testes que invocam `gpg`.
+///
+/// O gpg auto-cria `$HOME/.gnupg` na primeira execução e trata `EEXIST` como
+/// erro fatal. Dois processos gpg concorrentes num `$HOME` que ainda não tem
+/// `.gnupg` disputam o mesmo mkdir, e o perdedor morre com
+/// `Fatal: can't create directory '...': File exists` e status 2. Na máquina do
+/// desenvolvedor isso nunca aparece, porque o `~/.gnupg` já existe de outros
+/// usos; num runner de CI limpo a suíte falha de forma intermitente, ora num
+/// teste ora noutro, conforme quem perde a corrida.
+///
+/// Serializar resolve na raiz: a primeira invocação cria o diretório e as
+/// seguintes o encontram pronto. Com o diretório já existente, invocações
+/// concorrentes de gpg convivem sem problema.
+///
+/// Mesmo padrão de `WSL_ENV_LOCK` em `exec.rs`, inclusive na recuperação de
+/// poisoning. Todo teste novo que invoque gpg precisa tomar este lock —
+/// inclusive os de outros módulos, como `doctor::tests`.
+#[cfg(test)]
+pub(crate) static GPG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn gpg_lock() -> std::sync::MutexGuard<'static, ()> {
+    GPG_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1689,6 +1716,7 @@ mod tests {
 
     #[test]
     fn test_gpg_encrypt_decrypt_roundtrip() {
+        let _gpg = gpg_lock();
         if !gpg_available() {
             eprintln!("skipping: gpg not available");
             return;
@@ -1707,6 +1735,7 @@ mod tests {
 
     #[test]
     fn test_gpg_decrypt_wrong_passphrase_fails() {
+        let _gpg = gpg_lock();
         if !gpg_available() {
             eprintln!("skipping: gpg not available");
             return;

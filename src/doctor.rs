@@ -859,6 +859,7 @@ mod tests {
 
     #[test]
     fn test_check_backup_tools_reports_presence() {
+        let _gpg = crate::backup::gpg_lock();
         let summary = super::check_backup_tools();
         // tar e gzip praticamente sempre presentes no ambiente de teste Unix.
         assert_eq!(summary.tar, which::which("tar").is_ok());
