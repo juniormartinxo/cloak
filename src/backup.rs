@@ -425,7 +425,16 @@ fn collect_uncovered(
         if path.is_dir() {
             if subtree_has_included_file(&path, &rel, cli_name, extra)? {
                 collect_uncovered(&path, &rel, cli_name, extra, out)?;
-            } else {
+            } else if !is_allowed(cli_name, Path::new(&rel), extra) {
+                // Um diretório SEM arquivos faz `subtree_has_included_file`
+                // devolver false, então um `claude/skills/` vazio era agregado
+                // como não coberto e o relatório imprimia
+                // `claude/skills (0 bytes)` sob "NÃO incluído (fora da
+                // allowlist)" — mesmo `skills/` sendo padrão built-in. Falso
+                // positivo treina o usuário a ignorar o relatório, que é a
+                // única defesa contra omissão silenciosa. Um padrão de
+                // diretório (`skills/`) casa com o próprio diretório, então
+                // `is_allowed` distingue "vazio e coberto" de "vazio e fora".
                 out.push(UncoveredEntry {
                     path: rel,
                     size_bytes: dir_size(&path),
@@ -529,16 +538,42 @@ fn cli_extra_patterns(
     patterns
 }
 
-fn resolve_output_dir(config: &Config, opts: &BackupOptions) -> Result<PathBuf> {
+/// Resolve o diretório de saída e informa se ele é o default do cloak.
+///
+/// O booleano existe por causa das permissões: só o default é um diretório do
+/// cloak. Ver `prepare_output_dir`.
+fn resolve_output_dir(config: &Config, opts: &BackupOptions) -> Result<(PathBuf, bool)> {
     if let Some(dir) = &opts.output {
-        return Ok(dir.clone());
+        return Ok((dir.clone(), false));
     }
     if let Some(backup) = &config.backup {
         if let Some(dir) = &backup.output_dir {
-            return Ok(PathBuf::from(dir));
+            return Ok((PathBuf::from(dir), false));
         }
     }
-    paths::backups_dir()
+    Ok((paths::backups_dir()?, true))
+}
+
+/// Garante que o diretório de saída exista, aplicando `0700` apenas quando ele
+/// pertence ao cloak.
+///
+/// `paths::ensure_secure_dir` faz `create_dir_all` (no-op se já existe) e
+/// depois `set_owner_only_dir` INCONDICIONAL. Usado direto, isso mutava as
+/// permissões de um diretório que o cloak não criou — `cloak backup --output
+/// ~/Downloads`, `--output .` ou um `output_dir` sincronizado no OneDrive —
+/// sem aviso e sem opt-out. Em diretório compartilhado isso quebra outros
+/// usuários e processos; em filesystem que rejeita chmod vira falha rígida do
+/// backup. O artefato em si já é `0600`, então o chmod do diretório não
+/// agregava proteção nenhuma.
+///
+/// Regra: o default (`~/.config/cloak/backups`) é do cloak e é sempre travado;
+/// um diretório informado pelo usuário só é travado se o cloak for quem o
+/// criar — se já existia, fica exatamente como estava.
+fn prepare_output_dir(dir: &Path, is_default: bool) -> Result<()> {
+    if is_default || !dir.exists() {
+        return paths::ensure_secure_dir(dir);
+    }
+    Ok(())
 }
 
 fn target_profiles(opts: &BackupOptions) -> Result<Vec<String>> {
@@ -568,6 +603,113 @@ fn target_profiles(opts: &BackupOptions) -> Result<Vec<String>> {
     Ok(profiles)
 }
 
+/// Plano de backup de um perfil: o que entra, o que ficou de fora e o que a
+/// allowlist casou mas não pôde ser lido.
+///
+/// A seleção é separada da cópia porque o `--dry-run` é anunciado como "ver o
+/// que entraria no backup, sem gerar nenhum arquivo". Antes, o laço de cópia
+/// dos incluídos, a cópia das credenciais, a cópia do config global e a
+/// escrita do manifesto rodavam TODOS antes do ramo de dry-run — em perfil
+/// real, uma cópia de vários megabytes para diretório temporário, apagada logo
+/// em seguida.
+struct ProfileBackupPlan {
+    name: String,
+    /// Caminhos absolutos na origem, já filtrados pela allowlist.
+    included: Vec<PathBuf>,
+    uncovered: Vec<UncoveredEntry>,
+    /// Casaram com a allowlist mas não podem ser lidos (symlink quebrado,
+    /// arquivo removido durante o backup).
+    unreadable: Vec<String>,
+}
+
+/// Monta o plano de um perfil. NÃO escreve nada.
+fn plan_profile_backup(
+    profile: &str,
+    profile_root: &Path,
+    extra_includes: &[String],
+    include_credentials: bool,
+) -> Result<ProfileBackupPlan> {
+    let profile_dir = paths::profile_dir(profile)?;
+    if !profile_dir.exists() {
+        return Err(eyre!("profile '{profile}' does not exist"));
+    }
+    let _ = profile_root;
+
+    let mut included = Vec::new();
+    let mut uncovered = Vec::new();
+    let mut unreadable = Vec::new();
+
+    // Arquivos soltos na raiz do perfil (ex.: `.cloak`) ficam fora do laco
+    // de CLIs abaixo, que so trata diretorios. `.cloak` esta na allowlist
+    // da spec e precisa ser copiado; qualquer outro arquivo solto que nao
+    // case entra no relatorio de nao-cobertos, com o caminho relativo a
+    // raiz do perfil — sem isso, o relatorio podia afirmar cobertura total
+    // havendo arquivo de fora.
+    for path in collect_profile_root_files(&profile_dir)? {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if name == ".cloak" {
+            included.push(path);
+        } else {
+            uncovered.push(UncoveredEntry {
+                path: name,
+                size_bytes: path.metadata().map(|m| m.len()).unwrap_or(0),
+            });
+        }
+    }
+
+    for entry in fs::read_dir(&profile_dir)
+        .wrap_err_with(|| format!("failed reading {}", profile_dir.display()))?
+    {
+        let entry = entry?;
+        let cli_path = entry.path();
+        if !cli_path.is_dir() {
+            continue;
+        }
+        let cli_name = entry.file_name().to_string_lossy().into_owned();
+        let cli_extra = cli_extra_patterns(&cli_name, extra_includes, include_credentials);
+        let (cli_included, cli_uncovered) =
+            collect_profile_entries(&cli_path, &cli_name, &cli_extra)?;
+        included.extend(cli_included);
+        for u in cli_uncovered {
+            uncovered.push(UncoveredEntry {
+                path: format!("{cli_name}/{}", u.path),
+                size_bytes: u.size_bytes,
+            });
+        }
+    }
+
+    // Um arquivo ilegivel e' PULADO, nao fatal.
+    //
+    // Um symlink quebrado (`skills/x.md -> /nonexistent/y.md`, sobra comum
+    // depois de desinstalar um plugin ou skill) e' classificado como arquivo
+    // por `walk_files` e casa com a allowlist, mas `fs::copy` falha com
+    // ENOENT — e abortar tornava o backup impossivel ate o usuario descobrir
+    // e apagar o arquivo, com uma mensagem que nao sugeria remedio.
+    // `exists()` segue o symlink, entao a checagem aqui pega esse caso sem
+    // precisar tentar a copia (o dry-run tambem precisa reportar).
+    included.retain(|src| {
+        if src.exists() {
+            return true;
+        }
+        let shown = src.strip_prefix(&profile_dir).unwrap_or(src);
+        unreadable.push(format!(
+            "{} (arquivo inacessivel)",
+            shown.to_string_lossy().replace('\\', "/")
+        ));
+        false
+    });
+
+    Ok(ProfileBackupPlan {
+        name: profile.to_string(),
+        included,
+        uncovered,
+        unreadable,
+    })
+}
+
 pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
     ensure_tool("tar")?;
     ensure_tool("gpg")?;
@@ -581,6 +723,28 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
         .map(|b| b.include.clone())
         .unwrap_or_default();
 
+    // FASE 1 — seleção e relatório. Nenhuma escrita em disco.
+    println!("Backup");
+    let mut plans = Vec::new();
+    for profile in &profiles {
+        let plan = plan_profile_backup(
+            profile,
+            &profile_root,
+            &extra_includes,
+            opts.include_credentials,
+        )?;
+        print_backup_profile_report(&plan.name, &plan.uncovered);
+        print_unreadable_report(&plan.name, &plan.unreadable);
+        plans.push(plan);
+    }
+
+    if opts.dry_run {
+        println!("dry-run: nenhum artefato gerado");
+        return Ok(());
+    }
+
+    // FASE 2 — materialização. A partir daqui o cloak escreve em disco.
+    //
     // Área de staging temporária.
     //
     // ATENÇÃO: `tempfile::tempdir()` cria o diretório com 0777 & !umask, o que
@@ -603,100 +767,31 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
     paths::ensure_secure_dir(&staging_profiles)?;
 
     let mut profile_manifests = Vec::new();
-
-    println!("Backup");
-    for profile in &profiles {
-        let profile_dir = paths::profile_dir(profile)?;
-        if !profile_dir.exists() {
-            return Err(eyre!("profile '{profile}' does not exist"));
-        }
-        let mut all_uncovered = Vec::new();
-        let mut unreadable: Vec<String> = Vec::new();
-
-        // Arquivos soltos na raiz do perfil (ex.: `.cloak`) ficam fora do laco
-        // de CLIs abaixo, que so trata diretorios. `.cloak` esta na allowlist
-        // da spec e precisa ser copiado; qualquer outro arquivo solto que nao
-        // case entra no relatorio de nao-cobertos, com o caminho relativo a
-        // raiz do perfil — sem isso, o relatorio podia afirmar cobertura total
-        // havendo arquivo de fora.
-        let root_files = collect_profile_root_files(&profile_dir)?;
-        for path in root_files {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if name == ".cloak" {
-                let rel = path.strip_prefix(&profile_root).unwrap_or(&path);
-                let dest = staging_profiles.join(rel);
-                if let Some(parent) = dest.parent() {
-                    fs::create_dir_all(parent)
-                        .wrap_err_with(|| format!("failed creating {}", parent.display()))?;
-                }
-                fs::copy(&path, &dest)
-                    .wrap_err_with(|| format!("failed copying {}", path.display()))?;
-            } else {
-                all_uncovered.push(UncoveredEntry {
-                    path: name,
-                    size_bytes: path.metadata().map(|m| m.len()).unwrap_or(0),
-                });
+    for plan in plans {
+        let profile_dir = paths::profile_dir(&plan.name)?;
+        // Falhas de cópia descobertas só agora (arquivo removido entre o
+        // planejamento e a cópia, permissão negada) somam ao que já foi
+        // reportado na fase 1, com o mesmo tratamento: pular, não abortar.
+        let mut unreadable = Vec::new();
+        for src in &plan.included {
+            let rel = src.strip_prefix(&profile_root).unwrap_or(src);
+            let dest = staging_profiles.join(rel);
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)
+                    .wrap_err_with(|| format!("failed creating {}", parent.display()))?;
+            }
+            if let Err(err) = fs::copy(src, &dest) {
+                // Uma falha no meio da escrita deixa destino parcial.
+                let _ = fs::remove_file(&dest);
+                let shown = src.strip_prefix(&profile_dir).unwrap_or(src);
+                unreadable.push(format!(
+                    "{} ({err})",
+                    shown.to_string_lossy().replace('\\', "/")
+                ));
             }
         }
-
-        for entry in fs::read_dir(&profile_dir)
-            .wrap_err_with(|| format!("failed reading {}", profile_dir.display()))?
-        {
-            let entry = entry?;
-            let cli_path = entry.path();
-            if !cli_path.is_dir() {
-                continue;
-            }
-            let cli_name = entry.file_name().to_string_lossy().into_owned();
-            let cli_extra =
-                cli_extra_patterns(&cli_name, &extra_includes, opts.include_credentials);
-            let (included, uncovered) = collect_profile_entries(&cli_path, &cli_name, &cli_extra)?;
-
-            for src in included {
-                let rel = src.strip_prefix(&profile_root).unwrap_or(&src);
-                let dest = staging_profiles.join(rel);
-                if let Some(parent) = dest.parent() {
-                    fs::create_dir_all(parent)
-                        .wrap_err_with(|| format!("failed creating {}", parent.display()))?;
-                }
-                // Um arquivo ilegivel e' PULADO, nao fatal.
-                //
-                // Um symlink quebrado (`skills/x.md -> /nonexistent/y.md`, sobra
-                // comum depois de desinstalar um plugin ou skill) e' classificado
-                // como arquivo por `walk_files` e casa com a allowlist, mas
-                // `fs::copy` falha com ENOENT. Abortar aqui tornava o backup
-                // impossivel ate o usuario descobrir e apagar o arquivo, e a
-                // mensagem nao sugeria remedio. A mesma exposicao vale para
-                // qualquer arquivo removido entre `walk_files` e a copia.
-                if let Err(err) = fs::copy(&src, &dest) {
-                    // Uma falha no meio da escrita deixa destino parcial.
-                    let _ = fs::remove_file(&dest);
-                    let shown = src.strip_prefix(&profile_dir).unwrap_or(&src);
-                    unreadable.push(format!(
-                        "{} ({err})",
-                        shown.to_string_lossy().replace('\\', "/")
-                    ));
-                }
-            }
-
-            for u in uncovered {
-                all_uncovered.push(UncoveredEntry {
-                    path: format!("{cli_name}/{}", u.path),
-                    size_bytes: u.size_bytes,
-                });
-            }
-        }
-
-        // As credenciais NAO sao copiadas aqui: com `--include-credentials`
-        // elas entram na allowlist do CLI via `cli_extra_patterns` e sao
-        // copiadas pelo mesmo laco dos demais incluidos. Assim o relatorio e o
-        // manifesto abaixo enxergam exatamente o que foi para o payload.
-        print_backup_profile_report(profile, &all_uncovered);
-        print_unreadable_report(profile, &unreadable);
-        profile_manifests.push(build_profile_manifest(profile, all_uncovered));
+        print_unreadable_report(&plan.name, &unreadable);
+        profile_manifests.push(build_profile_manifest(&plan.name, plan.uncovered));
     }
 
     // Config global do cloak.
@@ -721,14 +816,9 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
         serde_json::to_string_pretty(&manifest).wrap_err("failed serializing manifest")?;
     fs::write(payload.join("manifest.json"), manifest_json).wrap_err("failed writing manifest")?;
 
-    if opts.dry_run {
-        println!("dry-run: nenhum artefato gerado");
-        return Ok(());
-    }
-
     // tar.gz intermediário e cifragem.
-    let output_dir = resolve_output_dir(config, &opts)?;
-    paths::ensure_secure_dir(&output_dir)?;
+    let (output_dir, output_is_default) = resolve_output_dir(config, &opts)?;
+    prepare_output_dir(&output_dir, output_is_default)?;
     let filename = format!("cloak-backup-{}.tar.gz.gpg", manifest.created_at);
     let final_path = output_dir.join(&filename);
     // Cifra para um nome temporario e renomeia no fim: o nome final so passa a
@@ -1011,23 +1101,27 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
     // qualquer lado desconhecido exige `--force` explícito.
     let home = dirs::home_dir().ok_or_else(|| eyre!("unable to resolve home directory"))?;
     let dest_uid = origin_uid(&home);
-    if !opts.force {
-        match (manifest.uid, dest_uid) {
-            (Some(backup_uid), Some(current_uid)) if backup_uid != current_uid => {
-                return Err(eyre!(
-                    "identidade divergente: backup do uid {} sendo restaurado por uid {}; \
-                     use --force para prosseguir",
-                    backup_uid,
-                    current_uid
-                ));
-            }
-            (Some(_), Some(_)) => {}
-            _ => {
-                return Err(eyre!(
-                    "não foi possível verificar a identidade do backup \
-                     (uid de origem ou destino indeterminado); use --force para prosseguir"
-                ));
-            }
+    // O problema de identidade vira DADO, não abort imediato: o `--dry-run` é
+    // documentado como "ver o plano de restauração sem tocar no destino", e
+    // abortar aqui fazia a prévia recusar exatamente o caso em que ela mais
+    // importa (restaurar por cima de uma instalação existente). O único
+    // contorno era `--force --dry-run`, o que treina o usuário a digitar
+    // `--force` em restores reais.
+    let identity_issue: Option<String> = match (manifest.uid, dest_uid) {
+        (Some(backup_uid), Some(current_uid)) if backup_uid != current_uid => Some(format!(
+            "identidade divergente: backup do uid {backup_uid} sendo restaurado \
+             por uid {current_uid}; use --force para prosseguir"
+        )),
+        (Some(_), Some(_)) => None,
+        _ => Some(
+            "não foi possível verificar a identidade do backup \
+             (uid de origem ou destino indeterminado); use --force para prosseguir"
+                .to_string(),
+        ),
+    };
+    if let Some(issue) = &identity_issue {
+        if !opts.force && !opts.dry_run {
+            return Err(eyre!("{issue}"));
         }
     }
 
@@ -1044,10 +1138,15 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
         None => manifest.profiles.iter().collect(),
     };
 
+    let extracted_profiles = extracted.join("profiles");
+
+    // Conflitos também viram dado, pelo mesmo motivo da checagem de identidade.
+    let mut plans: Vec<(&ProfileManifest, Vec<String>, bool)> = Vec::new();
     for pm in &restore_profiles {
+        let mut conflicts = Vec::new();
         let dest_profile = paths::profile_dir(&pm.name)?;
-        if dest_profile.exists() && !opts.force {
-            return Err(eyre!(
+        if dest_profile.exists() {
+            conflicts.push(format!(
                 "profile '{}' already exists at destination; use --force to overwrite",
                 pm.name
             ));
@@ -1056,28 +1155,27 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
         if let (Some(backup_acc), Some(dest_acc)) =
             (&pm.oauth_account, account::profile_email(&pm.name))
         {
-            if backup_acc != &dest_acc && !opts.force {
-                return Err(eyre!(
+            if backup_acc != &dest_acc {
+                conflicts.push(format!(
                     "conta divergente no perfil '{}': backup {} vs destino {}; use --force",
-                    pm.name,
-                    backup_acc,
-                    dest_acc
+                    pm.name, backup_acc, dest_acc
                 ));
             }
         }
+        if !conflicts.is_empty() && !opts.force && !opts.dry_run {
+            return Err(eyre!("{}", conflicts.join("; ")));
+        }
+        let has_content = extracted_profiles.join(&pm.name).exists();
+        plans.push((pm, conflicts, has_content));
     }
 
     if opts.dry_run {
-        println!("  perfis a restaurar: {}", restore_profiles.len());
-        for pm in &restore_profiles {
-            println!("    {} (MCP: {})", pm.name, pm.mcp_servers.join(", "));
-        }
+        print_restore_plan(&plans, identity_issue.as_deref(), opts.force);
         println!("dry-run: destino não foi alterado");
         return Ok(());
     }
 
     // Reescrita de paths na área extraída antes de copiar.
-    let extracted_profiles = extracted.join("profiles");
     if opts.rewrite_paths && extracted_profiles.exists() {
         let mut changed = Vec::new();
         let mut skipped = Vec::new();
@@ -1186,36 +1284,131 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
 /// credenciais renovadas ou trabalho criado depois do backup, mas significa
 /// que o perfil resultante mistura estado antigo e novo. O usuário precisa
 /// saber disso — daí o relatório.
-fn collect_preserved_files(src: &Path, dest: &Path) -> Result<Vec<String>> {
+/// Imprime o plano do `restore --dry-run`, incluindo os conflitos detectados.
+///
+/// O plano nomeia o que um restore real encontraria pela frente em vez de
+/// abortar na primeira checagem, que era o comportamento anterior.
+fn print_restore_plan(
+    plans: &[(&ProfileManifest, Vec<String>, bool)],
+    identity_issue: Option<&str>,
+    force: bool,
+) {
+    println!("  perfis a restaurar: {}", plans.len());
+    let mut needs_force = false;
+    if let Some(issue) = identity_issue {
+        println!("  conflito de identidade: {issue}");
+        needs_force = true;
+    }
+    for (pm, conflicts, has_content) in plans {
+        println!("    {} (MCP: {})", pm.name, pm.mcp_servers.join(", "));
+        if !has_content {
+            println!(
+                "      AVISO: o artefato nao tem conteudo para este perfil \
+                 (profiles/{} ausente); nada seria restaurado",
+                pm.name
+            );
+        }
+        for conflict in conflicts {
+            println!("      conflito: {conflict}");
+            needs_force = true;
+        }
+    }
+    if needs_force && !force {
+        println!("  → um restore real destes conflitos exigiria --force");
+    }
+}
+
+/// Retorna `true` se pelo menos um arquivo dentro de `dir` (recursivamente)
+/// também existe em `mirror`.
+///
+/// É o espelho de `subtree_has_included_file`, e serve ao mesmo propósito:
+/// decidir se uma subárvore pode virar uma linha única de relatório.
+fn subtree_has_mirrored_file(dir: &Path, mirror: &Path) -> Result<bool> {
+    for entry in fs::read_dir(dir).wrap_err_with(|| format!("failed reading {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let mirrored = mirror.join(entry.file_name());
+        if path.is_dir() {
+            if subtree_has_mirrored_file(&path, &mirrored)? {
+                return Ok(true);
+            }
+        } else if mirrored.exists() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn collect_preserved(
+    dir: &Path,
+    mirror: &Path,
+    rel_prefix: &str,
+    out: &mut Vec<UncoveredEntry>,
+) -> Result<()> {
+    for entry in fs::read_dir(dir).wrap_err_with(|| format!("failed reading {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let mirrored = mirror.join(entry.file_name());
+        let rel = if rel_prefix.is_empty() {
+            name
+        } else {
+            format!("{rel_prefix}/{name}")
+        };
+        if path.is_dir() {
+            if subtree_has_mirrored_file(&path, &mirrored)? {
+                collect_preserved(&path, &mirrored, &rel, out)?;
+            } else {
+                out.push(UncoveredEntry {
+                    path: rel,
+                    size_bytes: dir_size(&path),
+                });
+            }
+        } else if !mirrored.exists() {
+            out.push(UncoveredEntry {
+                path: rel,
+                size_bytes: path.metadata().map(|m| m.len()).unwrap_or(0),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Arquivos que já existem no destino e NÃO vêm no artefato.
+///
+/// O restore é um merge: nada do destino é apagado. Isso evita destruir
+/// credenciais renovadas ou trabalho criado depois do backup, mas significa
+/// que o perfil resultante mistura estado antigo e novo. O usuário precisa
+/// saber disso — daí o relatório.
+///
+/// A agregação por subárvore é a mesma regra de `collect_uncovered`, e existe
+/// pelo mesmo motivo: sessões, logs e `plugins/cache` deliberadamente nunca
+/// estão no artefato, então enumerar folha a folha imprimia uma linha para
+/// cada um dos 45.153 arquivos medidos em perfis reais. Um relatório que não
+/// é lido não neutraliza nada.
+fn collect_preserved_files(src: &Path, dest: &Path) -> Result<Vec<UncoveredEntry>> {
     let mut preserved = Vec::new();
     if !dest.exists() {
         return Ok(preserved);
     }
-
-    let mut dest_files = Vec::new();
-    walk_files(dest, &mut dest_files)?;
-    for file in dest_files {
-        let Ok(rel) = file.strip_prefix(dest) else {
-            continue;
-        };
-        if !src.join(rel).exists() {
-            preserved.push(rel.to_string_lossy().replace('\\', "/"));
-        }
-    }
-    preserved.sort();
+    collect_preserved(dest, src, "", &mut preserved)?;
+    preserved.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(preserved)
 }
 
-fn print_preserved_report(profile: &str, preserved: &[String]) {
+fn print_preserved_report(profile: &str, preserved: &[UncoveredEntry]) {
     if preserved.is_empty() {
         return;
     }
     println!(
-        "    {} arquivo(s) já existiam no destino e NÃO estavam no backup — preservados:",
+        "    {} item(ns) já existiam no destino e NÃO estavam no backup — preservados:",
         preserved.len()
     );
-    for path in preserved {
-        println!("      {profile}/{path}");
+    for entry in preserved {
+        println!(
+            "      {profile}/{} ({} bytes)",
+            entry.path, entry.size_bytes
+        );
     }
 }
 
@@ -1967,7 +2160,143 @@ mod tests {
         fs::write(dest.join("claude/token-novo.json"), "x").expect("w3");
 
         let preserved = collect_preserved_files(&src, &dest).expect("collect");
-        assert_eq!(preserved, vec!["claude/token-novo.json".to_string()]);
+        let paths: Vec<&str> = preserved.iter().map(|p| p.path.as_str()).collect();
+        assert_eq!(paths, vec!["claude/token-novo.json"]);
+    }
+
+    #[test]
+    fn test_collect_preserved_files_aggregates_fully_preserved_subtrees() {
+        // REGRESSAO: uma linha por arquivo folha. Como sessions, logs e
+        // plugins/cache deliberadamente nunca estao no artefato, um restore
+        // --force sobre um perfil real imprimia uma linha para cada um deles
+        // (45.153 arquivos medidos na spec). Um relatorio que nao e' lido nao
+        // neutraliza nada — a mesma regra de `collect_uncovered` vale aqui.
+        let tmp = tempdir().expect("tempdir");
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(src.join("claude/plugins")).expect("mkdir src");
+        fs::create_dir_all(dest.join("claude/sessions")).expect("mkdir sessions");
+        fs::create_dir_all(dest.join("claude/plugins/cache/a/b")).expect("mkdir cache");
+
+        // Coberto pelo artefato: nao e' preservado.
+        fs::write(src.join("claude/settings.json"), "novo").expect("w1");
+        fs::write(dest.join("claude/settings.json"), "antigo").expect("w2");
+        fs::write(src.join("claude/plugins/installed_plugins.json"), "{}").expect("w3");
+        fs::write(dest.join("claude/plugins/installed_plugins.json"), "{}").expect("w4");
+
+        // Subarvores inteiramente ausentes do artefato.
+        for n in 0..5 {
+            fs::write(dest.join(format!("claude/sessions/s{n}.jsonl")), "x").expect("session");
+        }
+        fs::write(dest.join("claude/plugins/cache/a/b/x.bin"), "x").expect("cache1");
+        fs::write(dest.join("claude/plugins/cache/z.bin"), "z").expect("cache2");
+        // Arquivo solto preservado ao lado de um coberto.
+        fs::write(dest.join("claude/token-novo.json"), "x").expect("w5");
+
+        let preserved = collect_preserved_files(&src, &dest).expect("collect");
+        let paths: Vec<&str> = preserved.iter().map(|p| p.path.as_str()).collect();
+
+        assert!(
+            paths.contains(&"claude/sessions"),
+            "subarvore inteiramente preservada vira UMA linha: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"claude/plugins/cache"),
+            "cache tambem agrega, dentro de um diretorio misto: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"claude/token-novo.json"),
+            "arquivo solto preservado continua nomeado: {paths:?}"
+        );
+        assert!(
+            !paths
+                .iter()
+                .any(|p| p.contains("s0.jsonl") || p.contains("x.bin")),
+            "folhas dentro de subarvore agregada nao podem ser enumeradas: {paths:?}"
+        );
+        // Tamanho agregado precisa estar preenchido, como no relatorio de
+        // nao-cobertos.
+        let sessions = preserved
+            .iter()
+            .find(|p| p.path == "claude/sessions")
+            .expect("sessions entry");
+        assert!(sessions.size_bytes > 0, "tamanho agregado ausente");
+    }
+
+    #[test]
+    fn test_empty_allowlisted_dir_is_not_reported_as_uncovered() {
+        // REGRESSAO: `subtree_has_included_file` devolve false para diretorio
+        // sem arquivos, entao um `claude/skills/` vazio era agregado como
+        // nao-coberto e o relatorio imprimia `claude/skills (0 bytes)` sob
+        // "NAO incluido (fora da allowlist)", mesmo `skills/` sendo built-in.
+        let tmp = tempdir().expect("tempdir");
+        let cli_dir = tmp.path().join("claude");
+        fs::create_dir_all(cli_dir.join("skills")).expect("mkdir skills");
+        fs::create_dir_all(cli_dir.join(".agents")).expect("mkdir .agents");
+        fs::create_dir_all(cli_dir.join("sessions")).expect("mkdir sessions");
+        fs::write(cli_dir.join("settings.json"), "{}").expect("settings");
+
+        let (_included, uncovered) =
+            collect_profile_entries(&cli_dir, "claude", &[]).expect("collect");
+        let paths: Vec<&str> = uncovered.iter().map(|u| u.path.as_str()).collect();
+
+        assert!(
+            !paths.contains(&"skills"),
+            "diretorio vazio DA allowlist nao e' 'fora da allowlist': {paths:?}"
+        );
+        assert!(
+            !paths.contains(&".agents"),
+            "diretorio vazio DA allowlist nao e' 'fora da allowlist': {paths:?}"
+        );
+        assert!(
+            paths.contains(&"sessions"),
+            "diretorio vazio FORA da allowlist continua sendo reportado: {paths:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_prepare_output_dir_does_not_chmod_preexisting_user_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        // REGRESSAO: `paths::ensure_secure_dir` chmod 0700 incondicional
+        // mutava as permissoes de um diretorio que o cloak nao criou
+        // (`--output ~/Downloads`, `--output .`, um output_dir sincronizado).
+        let tmp = tempdir().expect("tempdir");
+        let user_dir = tmp.path().join("Downloads");
+        fs::create_dir(&user_dir).expect("mkdir");
+        fs::set_permissions(&user_dir, fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        prepare_output_dir(&user_dir, false).expect("prepare");
+
+        let mode = fs::metadata(&user_dir)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o755,
+            "diretorio pre-existente do usuario nao pode ter as permissoes mutadas"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_prepare_output_dir_locks_dirs_created_by_cloak() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempdir().expect("tempdir");
+        let mode_of = |p: &Path| fs::metadata(p).expect("metadata").permissions().mode() & 0o777;
+
+        // Diretorio default do cloak: sempre 0700, mesmo se ja existir.
+        let default_dir = tmp.path().join("backups");
+        fs::create_dir(&default_dir).expect("mkdir");
+        fs::set_permissions(&default_dir, fs::Permissions::from_mode(0o755)).expect("chmod");
+        prepare_output_dir(&default_dir, true).expect("prepare default");
+        assert_eq!(mode_of(&default_dir), 0o700);
+
+        // Diretorio do usuario que o cloak precisa criar: nasce 0700.
+        let new_dir = tmp.path().join("novo/destino");
+        prepare_output_dir(&new_dir, false).expect("prepare new");
+        assert_eq!(mode_of(&new_dir), 0o700);
     }
 
     #[cfg(unix)]

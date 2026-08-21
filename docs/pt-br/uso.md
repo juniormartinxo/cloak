@@ -382,6 +382,13 @@ Um arquivo que casa com a allowlist mas não pode ser lido — tipicamente um sy
 deixado por um plugin ou skill desinstalado, ou um arquivo removido durante o backup — é **pulado
 e reportado em `stderr`**, não aborta o backup. O artefato é gerado com todo o resto.
 
+Um diretório vazio que **é** da allowlist (`skills/`, `.agents/`) não aparece como não-coberto —
+não há nada nele para omitir. Diretórios vazios não são recriados no restore: eles não carregam
+dado nenhum, e as CLIs os criam sozinhas na primeira execução.
+
+`cloak backup --dry-run` **não escreve nada**: não cria área de staging, não copia arquivo nenhum
+e não gera manifesto. Ele apenas percorre os perfis e imprime o relatório.
+
 ### Credenciais
 
 `claude/.credentials.json`, `codex/auth.json`, `gemini/.gemini/oauth_creds.json` e
@@ -406,7 +413,10 @@ include = []
 
 - `output_dir`: diretório de saída padrão. A resolução final segue esta ordem de prioridade:
   `--output` na linha de comando, depois `output_dir` do `config.toml`, depois o padrão
-  `~/.config/cloak/backups`.
+  `~/.config/cloak/backups`. O `cloak` aplica `0700` apenas ao diretório padrão, que é dele, e a um
+  diretório que ele mesmo precise criar. Um diretório **já existente** que você informe —
+  `~/Downloads`, `.`, uma pasta sincronizada do OneDrive — tem as permissões deixadas exatamente
+  como estão. É o artefato, sempre `0600`, que protege o conteúdo.
 - `upload_command`: comando executado após gerar o artefato, com `{archive}` substituído pelo
   caminho do arquivo gerado (com quoting seguro, então caminhos com espaço funcionam sem escapar
   manualmente).
@@ -435,8 +445,10 @@ conta OAuth) **antes** de escrever qualquer coisa no destino. Pontos importantes
 - Um backup com `format_version` mais novo é recusado mesmo com `--force`; atualize o `cloak`
   antes de restaurá-lo.
 - **É um merge, não uma substituição**: nada do perfil de destino é apagado. Arquivos que já
-  existem no destino e não vêm no artefato são preservados, e o restore lista explicitamente
-  esses arquivos preservados ao final.
+  existem no destino e não vêm no artefato são preservados, e o restore lista explicitamente o que
+  foi preservado ao final. A lista usa a mesma agregação do relatório de não-cobertos: uma
+  subárvore inteiramente ausente do artefato (sessões, logs, `plugins/cache`) vira **uma linha**
+  com o tamanho agregado, em vez de uma linha por arquivo.
 - Reescreve caminhos absolutos da máquina de origem (o `$HOME` e a raiz de perfis originais)
   dentro de arquivos `.json`, `.toml`, `.md` e `.sh`. Use `--no-rewrite-paths` para desativar essa
   reescrita.
@@ -457,7 +469,10 @@ conta OAuth) **antes** de escrever qualquer coisa no destino. Pontos importantes
   com `0700`, os demais com `0600`. Isso vale para `statusline-command.sh`, hooks referenciados em
   `codex/hooks.json` e executáveis sob `skills/` e `.agents/`. Em nenhum caso a permissão é
   afrouxada para grupo ou outros.
-- Use `--dry-run` para ver o plano de restauração sem tocar no destino.
+- Use `--dry-run` para ver o plano de restauração sem tocar no destino. O dry-run **não aborta nos
+  conflitos**: ele lista cada perfil, marca os conflitos encontrados (perfil já existente, conta
+  divergente, identidade não verificável, perfil sem conteúdo no artefato) e diz se um restore real
+  exigiria `--force`. Não é preciso digitar `--force` para ver a prévia.
 
 ### Dependências de sistema
 

@@ -132,6 +132,190 @@ config_dir_env = "CLAUDE_CONFIG_DIR"
     }
 
     #[test]
+    fn dry_run_does_not_create_staging_or_copy_anything() {
+        // REGRESSAO: o laco de copia dos incluidos, a copia das credenciais, a
+        // copia do config global e a escrita do manifesto rodavam TODOS antes
+        // do ramo de dry-run. Em perfil real isso e' uma copia de varios
+        // megabytes para diretorio temporario, apagada logo em seguida — e a
+        // documentacao anuncia o dry-run como "sem gerar nenhum arquivo".
+        //
+        // O controle e' o TMPDIR inexistente: o backup real falha ao criar o
+        // staging, entao um dry-run que passa prova que ele nao criou staging
+        // nem copiou nada.
+        let tmp = tempdir().expect("tempdir");
+        let xdg = tmp.path().join("xdg");
+        write_config(&xdg);
+        seed_profile_with_uncovered_entries(&xdg);
+        let out_dir = tmp.path().join("backups");
+        let missing_tmpdir = tmp.path().join("tmpdir-que-nao-existe");
+
+        let output = Command::new(cloak_bin())
+            .arg("backup")
+            .arg("--output")
+            .arg(&out_dir)
+            .arg("--dry-run")
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("TMPDIR", &missing_tmpdir)
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .output()
+            .expect("run backup dry-run");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "dry-run nao pode depender de staging\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // E continua sendo um relatorio util, nao um curto-circuito.
+        assert!(
+            stdout.contains("mystery.bin") && stdout.contains("sessions"),
+            "o dry-run precisa continuar imprimindo o relatorio:\n{stdout}"
+        );
+        assert!(
+            !missing_tmpdir.exists(),
+            "o dry-run nao pode criar area de staging"
+        );
+
+        // Controle: o backup real precisa do staging e falha com o mesmo TMPDIR.
+        let output = Command::new(cloak_bin())
+            .arg("backup")
+            .arg("--output")
+            .arg(&out_dir)
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("TMPDIR", &missing_tmpdir)
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .output()
+            .expect("run backup");
+        assert!(
+            !output.status.success(),
+            "controle invalido: o backup real deveria falhar sem TMPDIR utilizavel"
+        );
+    }
+
+    #[test]
+    fn backup_does_not_chmod_a_preexisting_output_dir() {
+        // REGRESSAO: `paths::ensure_secure_dir` roda `set_owner_only_dir`
+        // incondicional, entao `cloak backup --output ~/Downloads`, `--output .`
+        // ou um `output_dir` sincronizado tinham as permissoes mutadas para
+        // 0700 sem aviso e sem opt-out. O artefato ja e' 0600, entao o chmod do
+        // diretorio nao agregava protecao.
+        if !gpg_available() {
+            eprintln!("skipping: gpg not available");
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let xdg = tmp.path().join("xdg");
+        write_config(&xdg);
+        seed_profile(&xdg);
+
+        // Diretorio pre-existente do usuario, compartilhado (0755).
+        let out_dir = tmp.path().join("Downloads");
+        fs::create_dir(&out_dir).expect("mkdir");
+        fs::set_permissions(&out_dir, fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        let status = Command::new(cloak_bin())
+            .arg("backup")
+            .arg("--output")
+            .arg(&out_dir)
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .status()
+            .expect("run backup");
+        assert!(status.success(), "backup failed");
+
+        let mode = fs::metadata(&out_dir)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o755,
+            "o cloak nao pode mutar as permissoes de um diretorio que nao criou"
+        );
+
+        // O artefato continua sendo o que protege o conteudo.
+        let artifact = find_artifact(&out_dir);
+        let artifact_mode = fs::metadata(&artifact)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(artifact_mode, 0o600, "o artefato continua 0600");
+    }
+
+    #[test]
+    fn restore_dry_run_prints_plan_over_existing_profile() {
+        // REGRESSAO: a checagem de uid e a de perfil ja existente rodavam ANTES
+        // do ramo de dry-run, entao `cloak restore <artefato> --dry-run` numa
+        // maquina que ainda tem o perfil falhava com "already exists" e nunca
+        // imprimia o plano. O unico contorno era `--force --dry-run`, o que
+        // treina o usuario a digitar --force em restores reais.
+        if !gpg_available() {
+            eprintln!("skipping: gpg not available");
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let xdg = tmp.path().join("xdg");
+        write_config(&xdg);
+        seed_profile(&xdg);
+        let out_dir = tmp.path().join("backups");
+
+        let status = Command::new(cloak_bin())
+            .arg("backup")
+            .arg("--output")
+            .arg(&out_dir)
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .status()
+            .expect("run backup");
+        assert!(status.success(), "backup failed");
+        let artifact = find_artifact(&out_dir);
+
+        // O perfil continua no destino, com conteudo DIFERENTE do artefato:
+        // um restore real sobrescreveria; o dry-run nao pode tocar.
+        let settings = xdg.join("cloak/profiles/demo/claude/settings.json");
+        fs::write(&settings, r#"{"theme":"MODIFICADO"}"#).expect("modify settings");
+
+        let output = Command::new(cloak_bin())
+            .arg("restore")
+            .arg(&artifact)
+            .arg("--dry-run")
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .output()
+            .expect("run restore dry-run");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "dry-run precisa imprimir o plano em vez de abortar\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            stdout.contains("demo"),
+            "o plano precisa nomear o perfil:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("conflito"),
+            "o conflito detectado precisa aparecer no plano:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("--force"),
+            "o plano precisa dizer o que um restore real exigiria:\n{stdout}"
+        );
+        assert_eq!(
+            fs::read_to_string(&settings).expect("read settings"),
+            r#"{"theme":"MODIFICADO"}"#,
+            "o dry-run nao pode tocar no destino"
+        );
+    }
+
+    #[test]
     fn restore_refuses_existing_profile_without_force() {
         if !gpg_available() {
             eprintln!("skipping: gpg not available");

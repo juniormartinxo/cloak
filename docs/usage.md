@@ -383,6 +383,13 @@ an uninstalled plugin or skill, or a file removed while the backup runs — is *
 reported on `stderr`**, and does not abort the backup. The artifact is produced with everything
 else.
 
+An empty directory that **is** part of the allowlist (`skills/`, `.agents/`) is not listed as
+uncovered — there is nothing in it to omit. Empty directories are not recreated on restore: they
+carry no data, and the CLIs create them on their own first run.
+
+`cloak backup --dry-run` **writes nothing**: no staging area, no file copies, no manifest. It only
+walks the profiles and prints the report.
+
 ### Credentials
 
 `claude/.credentials.json`, `codex/auth.json`, `gemini/.gemini/oauth_creds.json`, and
@@ -408,7 +415,10 @@ include = []
 
 - `output_dir`: default output directory. The final destination is resolved in this priority
   order: `--output` on the command line, then `output_dir` from `config.toml`, then the built-in
-  default `~/.config/cloak/backups`.
+  default `~/.config/cloak/backups`. `cloak` applies `0700` only to the default directory, which is
+  its own, and to a directory it has to create itself. A directory you point it at that **already
+  exists** — `~/Downloads`, `.`, a synced OneDrive folder — is left with exactly the permissions it
+  had. It is the artifact, always `0600`, that protects the content.
 - `upload_command`: command run after generating the artifact, with `{archive}` substituted for
   the generated file's path (with safe quoting, so paths containing spaces work without manual
   escaping).
@@ -437,7 +447,9 @@ environment variable — with it set, `gpg` runs in non-interactive mode.
   restoring it.
 - **It is a merge, not a replacement**: nothing in the destination profile is deleted. Files that
   already exist at the destination and are not present in the artifact are preserved, and restore
-  explicitly lists those preserved files at the end.
+  explicitly lists what was preserved at the end. That list uses the same aggregation as the
+  uncovered report: a subtree entirely absent from the artifact (sessions, logs, `plugins/cache`)
+  becomes **a single line** with the aggregate size, instead of one line per file.
 - It rewrites absolute paths from the origin machine (the source `$HOME` and the source profiles
   root) inside `.json`, `.toml`, `.md`, and `.sh` files. Use `--no-rewrite-paths` to disable this
   rewriting.
@@ -458,7 +470,11 @@ environment variable — with it set, `gpg` runs in non-interactive mode.
   `0700`, everything else with `0600`. This covers `statusline-command.sh`, hooks referenced from
   `codex/hooks.json`, and executables under `skills/` and `.agents/`. Permissions are never
   loosened for group or others.
-- Use `--dry-run` to see the restore plan without touching the destination.
+- Use `--dry-run` to see the restore plan without touching the destination. The dry run **does not
+  abort on conflicts**: it lists each profile, flags the conflicts it found (profile already
+  present, diverging account, unverifiable identity, profile with no content in the artifact) and
+  says whether a real restore would require `--force`. You do not have to type `--force` to get the
+  preview.
 
 ### System dependencies
 
