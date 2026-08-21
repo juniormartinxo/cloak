@@ -506,15 +506,79 @@ mod tests {
     /// ainda está afirmando, e a asserção vê `None` de forma intermitente.
     static WSL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    fn wsl_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        WSL_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Define `WSL_DISTRO_NAME` e RESTAURA o valor anterior no `Drop`.
+    ///
+    /// Os testes antes terminavam com `remove_var`. Em WSL — alvo primário
+    /// deste projeto — a variável está genuinamente setada no ambiente, então
+    /// depois desses testes o valor real sumia pelo resto do processo de teste
+    /// e qualquer teste posterior que exercitasse `is_cursor_wsl_wrapper` veria
+    /// `None`.
+    ///
+    /// Inversamente, se uma asserção entre o `set_var` e o `remove_var`
+    /// entrasse em pânico, o teardown nunca rodava e `WSL_DISTRO_NAME=Ubuntu`
+    /// vazava para todos os testes seguintes — e como `wsl_env_lock` recupera
+    /// de poisoning deliberadamente, o vazamento ficava invisível. `Drop` roda
+    /// também durante o unwinding, então o pânico deixa de vazar.
+    ///
+    /// O chamador precisa deter `WSL_ENV_LOCK` enquanto o guard existir: é o
+    /// lock que garante que nenhum outro teste leia a variável no meio.
+    struct WslEnvGuard {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl WslEnvGuard {
+        fn set(value: &str) -> Self {
+            let previous = std::env::var_os("WSL_DISTRO_NAME");
+            unsafe {
+                std::env::set_var("WSL_DISTRO_NAME", value);
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for WslEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var("WSL_DISTRO_NAME", value),
+                    None => std::env::remove_var("WSL_DISTRO_NAME"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wsl_env_guard_restores_the_previous_value() {
+        // Tudo sob o mesmo lock dos demais testes: ninguém mexe na variável
+        // entre a leitura de `previous` e a verificação da restauração.
+        let _lock = wsl_env_lock();
+        let previous = std::env::var_os("WSL_DISTRO_NAME");
+
+        {
+            let _guard = WslEnvGuard::set("cloak-teste-temporario");
+            assert_eq!(
+                std::env::var_os("WSL_DISTRO_NAME").as_deref(),
+                Some(std::ffi::OsStr::new("cloak-teste-temporario"))
+            );
+        }
+
+        assert_eq!(
+            std::env::var_os("WSL_DISTRO_NAME"),
+            previous,
+            "o guard precisa restaurar o valor anterior, nao apagar a variavel"
+        );
+    }
+
     #[test]
     fn detects_cursor_wsl_wrapper_only_for_cursor_on_wsl_windows_path() {
-        let _guard = WSL_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-        unsafe {
-            std::env::set_var("WSL_DISTRO_NAME", "Ubuntu");
-        }
+        let _lock = wsl_env_lock();
+        let _guard = WslEnvGuard::set("Ubuntu");
 
         assert!(is_cursor_wsl_wrapper(
             "cursor",
@@ -528,21 +592,12 @@ mod tests {
             "cursor",
             Path::new("/usr/bin/cursor")
         ));
-
-        unsafe {
-            std::env::remove_var("WSL_DISTRO_NAME");
-        }
     }
 
     #[test]
     fn derives_profile_specific_cursor_remote_agent_folder_on_wsl() {
-        let _guard = WSL_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-        unsafe {
-            std::env::set_var("WSL_DISTRO_NAME", "Ubuntu");
-        }
+        let _lock = wsl_env_lock();
+        let _guard = WslEnvGuard::set("Ubuntu");
 
         assert_eq!(
             resolve_remote_agent_folder(
@@ -564,10 +619,6 @@ mod tests {
             ),
             None
         );
-
-        unsafe {
-            std::env::remove_var("WSL_DISTRO_NAME");
-        }
     }
 
     #[test]

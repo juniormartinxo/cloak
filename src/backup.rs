@@ -1048,6 +1048,24 @@ pub struct RestoreOptions {
     pub rewrite_paths: bool,
 }
 
+/// Recusa um artefato cujo formato de backup é mais novo do que este cloak
+/// entende.
+///
+/// NÃO é contornável por `--force`: um cloak antigo não tem como adivinhar a
+/// semântica de um formato futuro, e escrever no perfil do usuário com base em
+/// palpite é pior do que recusar.
+fn ensure_supported_format(format_version: u32) -> Result<()> {
+    if format_version > FORMAT_VERSION {
+        return Err(eyre!(
+            "este artefato usa o formato de backup v{} e este cloak suporta ate v{}; \
+             atualize o cloak para restaurar",
+            format_version,
+            FORMAT_VERSION
+        ));
+    }
+    Ok(())
+}
+
 pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
     ensure_tool("tar")?;
     ensure_tool("gpg")?;
@@ -1078,17 +1096,7 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
     let manifest: Manifest =
         serde_json::from_str(&manifest_raw).wrap_err("failed parsing manifest.json")?;
 
-    // Checagem de formato: NAO contornavel por --force. Um cloak antigo nao
-    // tem como adivinhar a semantica de um formato futuro, e escrever no
-    // perfil do usuario com base em palpite e' pior do que recusar.
-    if manifest.format_version > FORMAT_VERSION {
-        return Err(eyre!(
-            "este artefato usa o formato de backup v{} e este cloak suporta ate v{}; \
-             atualize o cloak para restaurar",
-            manifest.format_version,
-            FORMAT_VERSION
-        ));
-    }
+    ensure_supported_format(manifest.format_version)?;
 
     println!("Restore");
     println!("  origem: {} @ {}", manifest.hostname, manifest.created_at);
@@ -1556,20 +1564,29 @@ mod tests {
     }
 
     #[test]
-    fn test_restore_rejects_newer_format_version() {
-        // Um cloak antigo nao pode adivinhar a semantica de um formato futuro.
-        let manifest = Manifest {
-            format_version: FORMAT_VERSION + 1,
-            cloak_version: "0.3.1".into(),
-            created_at: "20260725-120000".into(),
-            hostname: "h".into(),
-            uid: Some(1000),
-            home: "/home/x".into(),
-            profile_root: "/home/x/.config/cloak/profiles".into(),
-            include_credentials: false,
-            profiles: vec![],
-        };
-        assert!(manifest.format_version > FORMAT_VERSION);
+    fn test_ensure_supported_format_rejects_newer_version() {
+        // O teste anterior montava um Manifest com FORMAT_VERSION + 1 e afirmava
+        // `manifest.format_version > FORMAT_VERSION` — aritmetica com
+        // constantes, sem exercitar a guarda. Apagar a guarda inteira deixava
+        // ele verde, entao o comportamento fail-closed estava sem protecao
+        // contra regressao.
+        let err = ensure_supported_format(FORMAT_VERSION + 1)
+            .expect_err("formato mais novo precisa ser recusado");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&(FORMAT_VERSION + 1).to_string()),
+            "a mensagem precisa nomear a versao do artefato: {msg}"
+        );
+        assert!(
+            msg.contains("atualize o cloak"),
+            "a mensagem precisa dizer o que fazer: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_ensure_supported_format_accepts_current_and_older() {
+        assert!(ensure_supported_format(FORMAT_VERSION).is_ok());
+        assert!(ensure_supported_format(0).is_ok());
     }
 
     #[test]

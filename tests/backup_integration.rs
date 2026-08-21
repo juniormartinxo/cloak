@@ -539,6 +539,53 @@ config_dir_env = "CLAUDE_CONFIG_DIR"
             .collect()
     }
 
+    fn tar_create_from(dir: &Path, archive: &Path) {
+        let output = Command::new("tar")
+            .arg("-czf")
+            .arg(archive)
+            .arg("-C")
+            .arg(dir)
+            .arg(".")
+            .output()
+            .expect("run tar -czf");
+        assert!(
+            output.status.success(),
+            "tar -czf failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn gpg_encrypt_to(plain: &Path, dest: &Path, passphrase: &str) {
+        let mut child = Command::new("gpg")
+            .arg("--batch")
+            .arg("--yes")
+            .arg("--pinentry-mode")
+            .arg("loopback")
+            .arg("--passphrase-fd")
+            .arg("0")
+            .arg("--symmetric")
+            .arg("-o")
+            .arg(dest)
+            .arg(plain)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn gpg encrypt");
+        child
+            .stdin
+            .take()
+            .expect("gpg stdin")
+            .write_all(passphrase.as_bytes())
+            .expect("write passphrase to gpg");
+        let output = child.wait_with_output().expect("wait gpg encrypt");
+        assert!(
+            output.status.success(),
+            "gpg encrypt failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     fn find_artifact(out_dir: &Path) -> PathBuf {
         fs::read_dir(out_dir)
             .expect("read out_dir")
@@ -1373,6 +1420,88 @@ config_dir_env = "CLAUDE_CONFIG_DIR"
                 .exists(),
             "o resto do perfil precisa ter sido restaurado"
         );
+    }
+
+    #[test]
+    fn restore_refuses_newer_format_version_even_with_force() {
+        // O teste unitario anterior era tautologia: montava um Manifest com
+        // FORMAT_VERSION + 1 e afirmava `> FORMAT_VERSION`, sem exercitar a
+        // guarda. Este forja um artefato real com format_version bumpado e
+        // exercita o caminho completo do `cloak restore`.
+        if !gpg_available() {
+            eprintln!("skipping: gpg not available");
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let xdg = tmp.path().join("xdg");
+        write_config(&xdg);
+        seed_profile(&xdg);
+        let out_dir = tmp.path().join("backups");
+
+        let status = Command::new(cloak_bin())
+            .arg("backup")
+            .arg("--output")
+            .arg(&out_dir)
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .status()
+            .expect("run backup");
+        assert!(status.success(), "backup failed");
+        let artifact = find_artifact(&out_dir);
+
+        // Reempacota o artefato com format_version = FORMAT_VERSION + 1.
+        let tar_tmp = tmp.path().join("plain.tar.gz");
+        gpg_decrypt_to(&artifact, &tar_tmp, "test-pass");
+        let payload = tmp.path().join("payload");
+        tar_extract_to(&tar_tmp, &payload);
+        let manifest_path = payload.join("manifest.json");
+        let raw = fs::read_to_string(&manifest_path).expect("read manifest");
+        let mut value: serde_json::Value = serde_json::from_str(&raw).expect("parse manifest");
+        let current = value["format_version"].as_u64().expect("format_version");
+        value["format_version"] = serde_json::json!(current + 1);
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&value).expect("serialize"),
+        )
+        .expect("write manifest");
+
+        let forged_tar = tmp.path().join("forged.tar.gz");
+        tar_create_from(&payload, &forged_tar);
+        let forged = tmp.path().join("forged.tar.gz.gpg");
+        gpg_encrypt_to(&forged_tar, &forged, "test-pass");
+
+        fs::remove_dir_all(xdg.join("cloak/profiles/demo")).expect("rm profile");
+
+        // Sem --force e com --force: os dois precisam recusar.
+        for extra in [Vec::new(), vec!["--force".to_string()]] {
+            let mut cmd = Command::new(cloak_bin());
+            cmd.arg("restore").arg(&forged);
+            for a in &extra {
+                cmd.arg(a);
+            }
+            let output = cmd
+                .env("XDG_CONFIG_HOME", &xdg)
+                .env("HOME", tmp.path())
+                .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+                .output()
+                .expect("run restore");
+
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                !output.status.success(),
+                "formato mais novo precisa ser recusado (extra: {extra:?})\nstdout:\n{}\nstderr:\n{stderr}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            assert!(
+                stderr.contains("formato de backup"),
+                "a mensagem precisa explicar o motivo (extra: {extra:?}):\n{stderr}"
+            );
+            assert!(
+                !xdg.join("cloak/profiles/demo").exists(),
+                "nada pode ser escrito no destino (extra: {extra:?})"
+            );
+        }
     }
 
     #[test]
