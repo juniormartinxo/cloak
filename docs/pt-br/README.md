@@ -9,10 +9,11 @@ Esta pasta contem a traducao para portugues do Brasil da documentacao oficial.
 
 ## Conteudo
 
-- [Visao geral e uso](./uso.md)
-- [Configuracao e estrutura de perfis](./configuracao.md)
+- [Visão geral e uso](./uso.md) — perfis, limites, ciclo de MCPs, permissões e backup/restore
+- [Configuração e estrutura de perfis](./configuracao.md) — opções de CLI, agente e backup
 - [Statusline do Claude por perfil](./statusline.md)
 - [Arquitetura interna](./arquitetura.md)
+- [Snapshot da revisão de segurança (2026-03-25)](./security_best_practices_report.md)
 - [Troubleshooting](./troubleshooting.md)
 - [Guia de desenvolvimento](./desenvolvimento.md)
 
