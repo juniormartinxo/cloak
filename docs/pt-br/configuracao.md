@@ -46,6 +46,8 @@ Se nao encontrar, usa `general.default_profile`.
 ```text
 ~/.config/cloak/
 ├── config.toml
+├── mcp_registry.toml        # catálogo MCP opcional do usuário
+├── backups/                # destino padrão dos backups cifrados
 └── profiles/
     ├── work/
     │   ├── claude/
@@ -57,9 +59,10 @@ Se nao encontrar, usa `general.default_profile`.
         └── gemini/
 ```
 
-## Adicionar outro CLI
+## Blocos de CLI suportados e customizados
 
-Adicione no `config.toml`:
+O gerenciamento de perfis está habilitado atualmente apenas para `claude`, `codex` e `gemini`.
+Um bloco customizado é uma configuração válida:
 
 ```toml
 [cli.aider]
@@ -68,15 +71,68 @@ config_dir_env = "AIDER_CONFIG_HOME"
 remove_env_vars = ["OPENAI_API_KEY"]
 ```
 
-Depois use normalmente:
+mas não habilita a execução sozinho. Hoje este comando falha com o erro claro
+`profile management ... temporarily disabled`:
 
 ```bash
 cloak exec aider
 ```
 
-Ela tambem passa a aparecer em `cloak profile account <nome>`. Para CLIs sem logica dedicada de
-inspecao, o comando cai em uma mensagem generica de "credentials detected" quando o diretorio do
-perfil nao esta vazio.
+Blocos customizados ainda podem aparecer em caminhos de configuração/inspeção de conta, mas
+`exec`, `login`, execução MCP raw e criação de diretórios de perfil obedecem à allowlist compilada.
+Estender essa lista exige mudança de implementação, não apenas de configuração.
+
+## Política de permissões de agentes
+
+A configuração padrão inclui uma política para Codex:
+
+```toml
+[agents.codex]
+allow_shell = true
+allow_file_write = true
+allow_network = true
+allowed_commands = []
+deny_commands = []
+```
+
+Prefira `cloak permission ask --agent <nome>` à edição manual. O comando valida nomes de
+comandos e impede que o mesmo item termine nas duas listas. Uma política de Claude também é
+sincronizada para os arrays `permissions.allow` e `permissions.deny` de todos os perfis Claude
+existentes.
+
+O wrapper `cloak exec` aplica a política ao primeiro token de comando encaminhado: bloqueios
+explícitos têm prioridade; categorias de shell/arquivo/rede desabilitadas bloqueiam comandos
+conhecidos; comandos perigosos exigem allowlist explícita; e uma `allowed_commands` não vazia
+recusa comandos ausentes da lista. Ao abrir um agente interativo sem comando encaminhado, não há
+token para classificar.
+
+Claude também recebe regras nativas sincronizadas em `settings.json`. Outros agentes continuam com
+a aplicação no wrapper, mas sem sincronização para a configuração da CLI alvo enquanto não houver
+adaptador.
+
+## Configuração de backup
+
+O bloco opcional abaixo controla destino padrão, comando de upload pós-backup e extensões da
+allowlist:
+
+```toml
+[backup]
+output_dir = "/caminho/para/cloak-backups"
+upload_command = "rclone copy {archive} remote:cloak/"
+include = ["extra/*.json", "conhecimento-customizado/"]
+```
+
+`--output` tem prioridade sobre `output_dir`; sem ambos, os artefatos vão para
+`~/.config/cloak/backups`. `{archive}` é substituído pelo caminho final do artefato com quoting
+seguro. Os padrões de `include` acrescentam arquivos à allowlist embutida e nunca removem os
+padrões existentes.
+
+## Registro MCP do usuário
+
+`resources/mcp_registry.toml` é compilado no binário. Crie
+`~/.config/cloak/mcp_registry.toml` para adicionar ou substituir entradas de `cloak mcp add`.
+Valores aceitam expansão de variáveis de ambiente, além de `${CWD}` e `${HOME}`; variáveis
+ausentes geram erro.
 
 ## Configuracao avancada de launch
 
@@ -107,7 +163,9 @@ binary = "code"
 launch_args = ["--user-data-dir", "{profile_dir}", "--extensions-dir", "{profile_dir}/extensions", "--new-window"]
 ```
 
-Isso evita reutilizar uma instancia GUI que ja estava logada em outra conta.
+Esse formato evita reutilizar uma instância GUI já autenticada em outra conta, mas `cursor` e
+`vscode` não estão habilitados na allowlist atual de gerenciamento de perfis. O exemplo documenta
+o schema suportado e o caminho dormente de launch de editores, não uma CLI chamável hoje.
 
 ## Migracao opcional para configs existentes
 
