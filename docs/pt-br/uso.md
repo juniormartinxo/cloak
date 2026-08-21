@@ -14,7 +14,7 @@ O `cloak` isola credenciais por diretorio para CLIs de LLM (ex.: `claude`, `code
 Instalacao global a partir do projeto:
 
 ```bash
-cd /home/junior/apps/jm/cloak
+cd cloak
 cargo install --path . --force
 ```
 
@@ -78,6 +78,78 @@ cloak mcp install codex filesystem --all-profiles -- npx @modelcontextprotocol/s
 
 Se voce nao passar `--profile` nem `--all-profiles` em um terminal interativo, o `cloak` resolve o
 perfil atual primeiro e depois pergunta se voce quer aplicar a instalacao em todos os perfis.
+
+### Catálogo MCP embutido
+
+Para servidores comuns, prefira o comando baseado no registro:
+
+```bash
+# listar o catálogo atual
+cloak mcp add
+
+# conferir os comandos nativos sem instalar
+cloak mcp add gitnexus --show
+
+# instalar nas CLIs escolhidas e em um perfil
+cloak mcp add gitnexus --for codex,claude --profile work --yes
+
+# remover um registro existente antes de reinstalar
+cloak mcp add filesystem --replace --profile work --yes
+```
+
+O registro embutido cobre servidores de referência e integrações populares como `filesystem`,
+`git`, `memory`, `playwright`, `context7`, `gitnexus`, `github`, `shadcn` e `sentry`. As entradas
+podem expandir variáveis de ambiente, além de `${CWD}` e `${HOME}`. A instalação para com erro
+explícito quando uma variável obrigatória não existe.
+
+Também é possível estender o registro sem alterar o binário. Adicione entradas em
+`~/.config/cloak/mcp_registry.toml`; entradas do usuário substituem entradas embutidas com o
+mesmo nome.
+
+### Remover e diagnosticar servidores MCP
+
+`mcp remove` delega para a CLI nativa e é idempotente: um servidor ausente aparece como
+`not installed` em vez de interromper toda a operação.
+
+```bash
+# conferir um par perfil/CLI
+cloak mcp remove filesystem --profile work --for codex --dry-run
+
+# remover de todos os perfis existentes nas CLIs suportadas
+cloak mcp remove filesystem --all-profiles --yes
+```
+
+`mcp doctor` lê os MCPs stdio configurados nos perfis Claude/Codex selecionados e executa um
+handshake JSON-RPC `initialize` real. Entradas HTTP/SSE são reportadas, mas não são iniciadas como
+processos stdio.
+
+```bash
+cloak mcp doctor --profile work
+cloak mcp doctor --all-profiles --name gitnexus --timeout 10 --with-tools
+```
+
+`--with-tools` envia `tools/list` depois de uma inicialização bem-sucedida. Uma falha faz o comando
+terminar com erro depois que todas as entradas correspondentes forem verificadas.
+
+## Configurar permissões de agentes
+
+Rode o questionário guiado para manter uma política `[agents.<nome>]` no `config.toml`:
+
+```bash
+cloak permission ask --agent codex
+cloak permission ask --agent claude
+```
+
+O questionário cobre acesso ao shell, escrita de arquivos, rede e listas explícitas de comandos
+permitidos e bloqueados. `cloak exec` verifica o primeiro token de comando encaminhado antes de
+abrir o agente: bloqueios explícitos têm prioridade, comandos perigosos exigem allowlist explícita
+e uma allowlist não vazia recusa comandos ausentes. Ao iniciar um agente interativo sem comando
+encaminhado, não há token para classificar.
+
+Para Claude, salvar a política também sincroniza regras `allow` e `deny` no `settings.json` de todos
+os perfis Claude existentes, preservando campos não relacionados como `ask` e `defaultMode`.
+Outros agentes recebem as checagens do wrapper, mas não sincronização nativa de configurações
+enquanto não houver adaptador.
 
 ## Inspecionar contas autenticadas em um perfil
 
@@ -283,10 +355,14 @@ cloak restore /caminho/cloak-backup-20260725-122130.tar.gz.gpg
 
 A seleção usa uma allowlist, não uma cópia integral do perfil. Entram:
 
-- `settings.json`, `keybindings.json`, arquivos `*.md`, o diretório `skills/` e `.agents/`;
-- do `claude`: `statusline-command.sh` e os manifestos de plugin
-  (`plugins/installed_plugins.json`, `plugins/known_marketplaces.json`, `plugins/blocklist.json`);
+- `settings.json`, `keybindings.json`, arquivos `*.md` no topo e os diretórios completos `skills/`
+  e `.agents/`;
+- o arquivo `.cloak` na raiz do perfil, quando existir;
+- do `claude`: `statusline-command.sh`, `plans/`, memórias de projeto em
+  `projects/*/memory/` e os manifestos de plugin (`plugins/installed_plugins.json`,
+  `plugins/known_marketplaces.json`, `plugins/blocklist.json`);
 - do `codex`: `config.toml`, `hooks.json` e o diretório `memories/`.
+- o `config.toml` global do Cloak e um `manifest.json` versionado na raiz do artefato.
 
 Ficam de fora sessões, logs, caches, plugins baixados e histórico de projetos. Em perfis reais
 isso costuma reduzir vários GB para poucos MB.
@@ -325,7 +401,9 @@ include = []
   removem nenhum item padrão.
 
 O nome do artefato segue o formato `cloak-backup-<YYYYMMDD-HHMMSS>.tar.gz.gpg` e é criado com
-permissão `0600`.
+permissão `0600`. A cifragem é escrita primeiro em um caminho `.partial`, que só recebe o nome
+final depois que o GPG termina com sucesso; assim, uma interrupção não deixa um artefato truncado
+com nome definitivo.
 
 ### Uso não interativo (cron/CI)
 
@@ -341,6 +419,8 @@ conta OAuth) **antes** de escrever qualquer coisa no destino. Pontos importantes
 - Recusa sobrescrever um perfil já existente; use `--force` para permitir.
 - Se a identidade registrada no manifesto não puder ser verificada, o restore também exige
   `--force` — a falha é segura por padrão, nunca silenciosa.
+- Um backup com `format_version` mais novo é recusado mesmo com `--force`; atualize o `cloak`
+  antes de restaurá-lo.
 - **É um merge, não uma substituição**: nada do perfil de destino é apagado. Arquivos que já
   existem no destino e não vêm no artefato são preservados, e o restore lista explicitamente
   esses arquivos preservados ao final.
@@ -348,7 +428,10 @@ conta OAuth) **antes** de escrever qualquer coisa no destino. Pontos importantes
   dentro de arquivos `.json`, `.toml`, `.md` e `.sh`. Use `--no-rewrite-paths` para desativar essa
   reescrita.
 - Ao final, relata o que não veio no backup e será reconstruído automaticamente pelas CLIs na
-  primeira execução (plugins, marketplaces, servidores MCP registrados).
+  primeira execução (plugins e marketplaces). O manifesto também registra os nomes de MCPs do
+  Claude detectados em `.claude.json` para reconciliação manual.
+- O `config.toml` global do Cloak entra no artefato como referência, mas o restore atual só mescla
+  `profiles/`; ele não substitui a configuração global do destino.
 - Use `--dry-run` para ver o plano de restauração sem tocar no destino.
 
 ### Dependências de sistema
