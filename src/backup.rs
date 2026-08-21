@@ -1177,36 +1177,57 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
         plans.push((pm, conflicts, has_content));
     }
 
+    // `config.toml` global fica na RAIZ do payload, irmão de `profiles/`.
+    let extracted_config = extracted.join("config.toml");
+
     if opts.dry_run {
         print_restore_plan(&plans, identity_issue.as_deref(), opts.force);
+        if extracted_config.exists() {
+            println!(
+                "  o config.toml global do artefato seria gravado como \
+                 config.toml.from-backup (referência, não mesclado)"
+            );
+        }
         println!("dry-run: destino não foi alterado");
         return Ok(());
     }
 
     // Reescrita de paths na área extraída antes de copiar.
-    if opts.rewrite_paths && extracted_profiles.exists() {
+    if opts.rewrite_paths {
         let mut changed = Vec::new();
         let mut skipped = Vec::new();
-        let from_root = &manifest.profile_root;
         let to_root = profile_root.to_string_lossy();
-        rewrite_tree(
-            &extracted_profiles,
-            from_root,
-            &to_root,
-            &mut changed,
-            &mut skipped,
-        )?;
-        // Também reescrever o $HOME de origem, se diferente.
         let to_home = home.to_string_lossy();
+
+        // Passada pela raiz de perfis e, se diferente, pelo $HOME de origem.
+        let mut passes: Vec<(&str, &str)> = vec![(&manifest.profile_root, to_root.as_ref())];
         if manifest.home != to_home {
-            rewrite_tree(
-                &extracted_profiles,
-                &manifest.home,
-                &to_home,
-                &mut changed,
-                &mut skipped,
-            )?;
+            passes.push((&manifest.home, to_home.as_ref()));
         }
+
+        for (from, to) in passes {
+            if extracted_profiles.exists() {
+                rewrite_tree(&extracted_profiles, from, to, &mut changed, &mut skipped)?;
+            }
+            // `config.toml` precisa entrar nas mesmas passadas: ele carrega
+            // `[backup].output_dir` e os `binary` de cada `[cli.*]`, todos
+            // caminhos absolutos da máquina de origem. Como está na raiz do
+            // payload, `rewrite_tree(&extracted_profiles, ..)` não o alcança.
+            //
+            // `manifest.json` fica DE FORA de propósito: ele é o registro dos
+            // paths de ORIGEM, e reescrevê-lo apagaria o próprio dado que
+            // permite saber de onde o artefato veio.
+            if extracted_config.exists() {
+                match rewrite_paths_in_file(&extracted_config, from, to)? {
+                    RewriteOutcome::Rewritten => {
+                        changed.push(extracted_config.display().to_string())
+                    }
+                    RewriteOutcome::Skipped(detail) => skipped.push(detail),
+                    RewriteOutcome::Unchanged => {}
+                }
+            }
+        }
+
         if !changed.is_empty() {
             println!("  paths reescritos em {} arquivo(s)", changed.len());
         }
@@ -1283,6 +1304,16 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
         );
     }
 
+    // Depois do check acima de propósito: um restore que falhou não deixa
+    // arquivo novo para trás.
+    if let Some(reference) = restore_global_config_reference(&extracted_config)? {
+        println!(
+            "  config.toml global do artefato gravado em {} — referência, \
+             NÃO mesclado; compare e aplique à mão o que quiser",
+            reference.display()
+        );
+    }
+
     Ok(())
 }
 
@@ -1292,6 +1323,32 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
 /// credenciais renovadas ou trabalho criado depois do backup, mas significa
 /// que o perfil resultante mistura estado antigo e novo. O usuário precisa
 /// saber disso — daí o relatório.
+/// Grava o `config.toml` global do artefato AO LADO do config em uso, como
+/// `config.toml.from-backup`.
+///
+/// O `run_backup` sempre copiou o config global para o artefato, mas o
+/// `run_restore` nunca o lia — era carga morta. Restaurá-lo por cima do config
+/// em uso seria o único ponto em que o restore poderia degradar configuração
+/// existente: o arquivo mistura o que é portável (os blocos `[cli.*]`) com o
+/// que é da máquina de origem (`[backup].output_dir`, cada `binary`), e o
+/// restore de perfil é explicitamente um merge que nunca apaga nada.
+///
+/// Gravar ao lado devolve a informação ao usuário sem inventar semântica de
+/// merge de TOML e sem tocar no arquivo em uso. A referência é derivada e
+/// regerada a cada restore, então é sobrescrita sem exigir `--force`.
+fn restore_global_config_reference(extracted_config: &Path) -> Result<Option<PathBuf>> {
+    if !extracted_config.exists() {
+        return Ok(None);
+    }
+    let cloak_dir = paths::cloak_config_dir()?;
+    paths::ensure_secure_dir(&cloak_dir)?;
+    let dest = cloak_dir.join("config.toml.from-backup");
+    fs::copy(extracted_config, &dest)
+        .wrap_err_with(|| format!("failed writing {}", dest.display()))?;
+    paths::set_owner_only_file(&dest)?;
+    Ok(Some(dest))
+}
+
 /// Imprime o plano do `restore --dry-run`, incluindo os conflitos detectados.
 ///
 /// O plano nomeia o que um restore real encontraria pela frente em vez de

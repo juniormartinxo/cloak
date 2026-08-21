@@ -456,8 +456,12 @@ environment variable — with it set, `gpg` runs in non-interactive mode.
 - At the end, it reports what was not part of the backup and will be rebuilt automatically by the
   CLIs on first run (plugins and marketplaces). The manifest also records the Claude MCP names
   detected in `.claude.json` so they can be reconciled manually.
-- The global Cloak `config.toml` is included in the archive as reference, but the current restore
-  command only merges `profiles/`; it does not replace the destination's global config.
+- The global Cloak `config.toml` is included in the archive, and restore writes it to
+  `~/.config/cloak/config.toml.from-backup`, with path rewriting already applied. It is **not
+  merged and does not overwrite** the `config.toml` in use: the file mixes what is portable (the
+  `[cli.*]` blocks) with what belongs to the origin machine (`[backup].output_dir`, each
+  `binary`). Compare the two and apply by hand whatever you want. The reference is regenerated on
+  every restore.
 - A profile listed in the manifest that has no directory inside the artifact (a truncated
   artifact, or a profile whose content was entirely uncovered) produces an **explicit warning** on
   `stderr`. If no profile ends up being restored at all, `cloak restore` **exits with a non-zero

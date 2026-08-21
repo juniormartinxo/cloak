@@ -1504,6 +1504,228 @@ config_dir_env = "CLAUDE_CONFIG_DIR"
         }
     }
 
+    /// Escreve o `config.toml` global com um `output_dir` absoluto, para que a
+    /// reescrita de paths tenha algo observável para reescrever.
+    fn write_config_with_output_dir(xdg: &Path, output_dir: &Path) {
+        let cloak_dir = xdg.join("cloak");
+        fs::create_dir_all(&cloak_dir).expect("mkdir cloak");
+        fs::write(
+            cloak_dir.join("config.toml"),
+            format!(
+                r#"[general]
+default_profile = "demo"
+
+[cli.claude]
+binary = "claude"
+config_dir_env = "CLAUDE_CONFIG_DIR"
+
+[backup]
+output_dir = "{}"
+"#,
+                output_dir.display()
+            ),
+        )
+        .expect("write config");
+    }
+
+    #[test]
+    fn restore_writes_global_config_reference_without_overwriting_the_active_one() {
+        // O `config.toml` global era copiado para o artefato e NUNCA lido no
+        // restore — carga morta. Agora ele volta AO LADO, como referencia, sem
+        // mesclar nem sobrescrever o config em uso: o arquivo mistura o que e'
+        // portavel (`[cli.*]`) com o que e' da maquina de origem
+        // (`[backup].output_dir`, cada `binary`).
+        if !gpg_available() {
+            eprintln!("skipping: gpg not available");
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let xdg = tmp.path().join("xdg");
+        write_config(&xdg);
+        seed_profile(&xdg);
+        let out_dir = tmp.path().join("backups");
+
+        let status = Command::new(cloak_bin())
+            .arg("backup")
+            .arg("--output")
+            .arg(&out_dir)
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .status()
+            .expect("run backup");
+        assert!(status.success(), "backup failed");
+        let artifact = find_artifact(&out_dir);
+
+        fs::remove_dir_all(xdg.join("cloak/profiles/demo")).expect("rm profile");
+
+        // Config ATIVO diferente do que foi para o artefato: nao pode ser tocado.
+        let active = xdg.join("cloak/config.toml");
+        let active_content = r#"[general]
+default_profile = "outro"
+
+[cli.claude]
+binary = "claude"
+config_dir_env = "CLAUDE_CONFIG_DIR"
+"#;
+        fs::write(&active, active_content).expect("write active config");
+
+        let output = Command::new(cloak_bin())
+            .arg("restore")
+            .arg(&artifact)
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .output()
+            .expect("run restore");
+        assert!(
+            output.status.success(),
+            "restore failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        assert_eq!(
+            fs::read_to_string(&active).expect("read active"),
+            active_content,
+            "o config.toml em uso nao pode ser mesclado nem sobrescrito"
+        );
+
+        let reference = xdg.join("cloak/config.toml.from-backup");
+        assert!(
+            reference.exists(),
+            "o config.toml do artefato precisa voltar como referencia"
+        );
+        let reference_content = fs::read_to_string(&reference).expect("read reference");
+        assert!(
+            reference_content.contains(r#"default_profile = "demo""#),
+            "a referencia precisa ter o conteudo do artefato: {reference_content}"
+        );
+
+        let mode = fs::metadata(&reference)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "a referencia precisa ser 0600, got {mode:o}");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("config.toml.from-backup"),
+            "o restore precisa avisar que gravou a referencia:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn restore_rewrites_paths_in_the_global_config_reference() {
+        // REGRESSAO ESTRUTURAL: `config.toml` fica na RAIZ do payload, irmao de
+        // `profiles/`, e `rewrite_tree` so percorria `extracted/profiles`. Sem
+        // estender o escopo, a referencia voltaria com `[backup].output_dir` e
+        // os `binary` apontando para a maquina antiga.
+        if !gpg_available() {
+            eprintln!("skipping: gpg not available");
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+
+        // Maquina de ORIGEM.
+        let home_a = tmp.path().join("a");
+        let xdg_a = home_a.join("xdg");
+        let output_a = home_a.join("backups-destino");
+        write_config_with_output_dir(&xdg_a, &output_a);
+        seed_profile(&xdg_a);
+        let out_dir = tmp.path().join("backups");
+
+        let status = Command::new(cloak_bin())
+            .arg("backup")
+            .arg("--output")
+            .arg(&out_dir)
+            .env("XDG_CONFIG_HOME", &xdg_a)
+            .env("HOME", &home_a)
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .status()
+            .expect("run backup");
+        assert!(status.success(), "backup failed");
+        let artifact = find_artifact(&out_dir);
+
+        // Maquina de DESTINO: outro $HOME, outra raiz de perfis.
+        let home_b = tmp.path().join("b");
+        let xdg_b = home_b.join("xdg");
+        fs::create_dir_all(&xdg_b).expect("mkdir xdg_b");
+
+        let output = Command::new(cloak_bin())
+            .arg("restore")
+            .arg(&artifact)
+            .env("XDG_CONFIG_HOME", &xdg_b)
+            .env("HOME", &home_b)
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .output()
+            .expect("run restore");
+        assert!(
+            output.status.success(),
+            "restore failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let reference = xdg_b.join("cloak/config.toml.from-backup");
+        let content = fs::read_to_string(&reference).expect("read reference");
+        assert!(
+            content.contains(&home_b.join("backups-destino").display().to_string()),
+            "o output_dir precisa apontar para o $HOME do destino:\n{content}"
+        );
+        assert!(
+            !content.contains(&home_a.display().to_string()),
+            "nenhum path da maquina de origem pode sobrar:\n{content}"
+        );
+    }
+
+    #[test]
+    fn restore_dry_run_does_not_write_the_global_config_reference() {
+        if !gpg_available() {
+            eprintln!("skipping: gpg not available");
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let xdg = tmp.path().join("xdg");
+        write_config(&xdg);
+        seed_profile(&xdg);
+        let out_dir = tmp.path().join("backups");
+
+        let status = Command::new(cloak_bin())
+            .arg("backup")
+            .arg("--output")
+            .arg(&out_dir)
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .status()
+            .expect("run backup");
+        assert!(status.success(), "backup failed");
+        let artifact = find_artifact(&out_dir);
+
+        let output = Command::new(cloak_bin())
+            .arg("restore")
+            .arg(&artifact)
+            .arg("--dry-run")
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .output()
+            .expect("run restore dry-run");
+        assert!(output.status.success(), "dry-run failed");
+
+        assert!(
+            !xdg.join("cloak/config.toml.from-backup").exists(),
+            "o dry-run nao pode escrever a referencia"
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("config.toml.from-backup"),
+            "mas o plano precisa anunciar que ela seria gravada:\n{stdout}"
+        );
+    }
+
     #[test]
     fn restore_wrong_passphrase_fails() {
         if !gpg_available() {

@@ -455,8 +455,11 @@ conta OAuth) **antes** de escrever qualquer coisa no destino. Pontos importantes
 - Ao final, relata o que não veio no backup e será reconstruído automaticamente pelas CLIs na
   primeira execução (plugins e marketplaces). O manifesto também registra os nomes de MCPs do
   Claude detectados em `.claude.json` para reconciliação manual.
-- O `config.toml` global do Cloak entra no artefato como referência, mas o restore atual só mescla
-  `profiles/`; ele não substitui a configuração global do destino.
+- O `config.toml` global do Cloak entra no artefato e o restore o grava como
+  `~/.config/cloak/config.toml.from-backup`, com a reescrita de paths já aplicada. Ele **não é
+  mesclado nem sobrescreve** o `config.toml` em uso: o arquivo mistura o que é portável (os blocos
+  `[cli.*]`) com o que é da máquina de origem (`[backup].output_dir`, cada `binary`). Compare os
+  dois e aplique à mão o que quiser. A referência é regerada a cada restore.
 - Um perfil listado no manifesto que não tem diretório dentro do artefato (artefato truncado, ou
   perfil cujo conteúdo era todo não-coberto) gera um **aviso explícito** em `stderr`. Se nenhum
   perfil chegar a ser restaurado, o `cloak restore` **falha com código diferente de 0** em vez de

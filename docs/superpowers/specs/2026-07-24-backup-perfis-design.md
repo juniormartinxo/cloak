@@ -250,8 +250,26 @@ incluídas.
 4. Verifica colisão: perfil já existente no destino nunca é sobrescrito sem `--force`.
 5. Reescreve paths absolutos, salvo `--no-rewrite-paths`.
 6. Copia os arquivos e reaplica `0700` em diretórios e `0600` em arquivos.
-7. Imprime o relatório do que não veio no backup e será reconstruído.
-8. Remove o diretório temporário.
+7. Grava o `config.toml` global do artefato como `config.toml.from-backup`, ao lado do config
+   em uso.
+8. Imprime o relatório do que não veio no backup e será reconstruído.
+9. Remove o diretório temporário.
+
+### O `config.toml` global volta como referência, não como substituição
+
+O artefato carrega o `config.toml` global do cloak, mas o restore não o mescla nem o
+sobrescreve: grava `~/.config/cloak/config.toml.from-backup`, com a reescrita de paths já
+aplicada, e informa o caminho.
+
+Restaurá-lo por cima do config em uso seria o único ponto em que o restore poderia degradar
+configuração existente, enquanto o restore de perfil é explicitamente um merge que nunca apaga
+nada. O arquivo também mistura duas naturezas: os blocos `[cli.*]` são portáveis e valem a pena
+recuperar, mas `[backup].output_dir` e cada `binary` são específicos da máquina de origem. Um
+merge automático teria de escolher um vencedor por chave, e escolher errado quebra a instalação
+do destino em silêncio.
+
+A alternativa descartada era remover o `config.toml` do artefato. Ela custa a referência mais
+útil que existe ao configurar uma máquina nova — exatamente o cenário que motivou a feature.
 
 ### Reescrita de paths absolutos
 
