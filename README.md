@@ -46,10 +46,13 @@ No wrappers running in background. No daemons. No persistent state. Just a clean
 | 🔒 **Credential isolation** | Conflicting env vars (e.g. `ANTHROPIC_API_KEY`) are stripped before exec |
 | 🔍 **Automatic resolution** | Walks up to root; falls back to `default_profile` from config |
 | 👤 **Account inspection** | Shows which account each CLI profile appears to be authenticated with |
+| 📊 **Local usage limits** | Reads Claude and Codex snapshots and ranks profiles by available weekly capacity |
 | 🩺 **Doctor command** | Validates config, binaries, profile structure and credential hints |
 | 💻 **Shell completions** | Bash, Zsh, Fish, PowerShell and Elvish |
 | 🖥️ **Claude statusline** | Auto-provisions a statusline script showing model/context/cost and persisting limit snapshots |
-| 🔌 **MCP install helper** | Installs MCP servers through the native CLI syntax for supported tools and scopes them per profile |
+| 🔌 **MCP lifecycle** | Catalog-based install, native install, idempotent removal and JSON-RPC health checks per profile |
+| 🛡️ **Agent permission policy** | Guided policy for shell, file, network and command access, synchronized to Claude profiles |
+| 📦 **Encrypted backup and restore** | Allowlisted profile knowledge, optional credentials, safe merge restore and path rewriting |
 
 ---
 
@@ -104,9 +107,12 @@ cloak profile account work
 cloak limits work
 cloak limits rank
 
-# 6. Install MCP servers in-profile
-cloak mcp install codex filesystem --profile work -- npx @modelcontextprotocol/server-filesystem /tmp
-cloak mcp install claude sentry --profile work --transport http --url https://mcp.sentry.dev/mcp -H "Authorization: Bearer token"
+# 6. Install an MCP from the built-in catalog
+cloak mcp add filesystem --for codex,claude --profile work --yes
+
+# 7. Preview and create an encrypted backup
+cloak backup --dry-run
+cloak backup
 ```
 
 `cloak profile account <name>` inspects each configured CLI home inside the profile and prints the
@@ -145,8 +151,19 @@ gemini -> Gem User <gem@example.com>
 Fresh snapshots are ranked first; expired snapshots remain visible for reference, but are sorted
 after fresh rows and marked with `expired *` in `Resets`.
 
-`cloak mcp install` installs MCP servers inside the selected `cloak` profile, using the native
-syntax of each supported CLI instead of a one-size-fits-all wrapper:
+`cloak mcp add` is the quickest path: running it without a name prints the built-in catalog, and
+the named form resolves the transport, command and supported CLIs for you. Use `--show` to preview
+the native commands and `--replace` for an idempotent re-install:
+
+```bash
+cloak mcp add
+cloak mcp add gitnexus --for codex,claude --profile work --yes
+cloak mcp add sentry --show
+cloak mcp add filesystem --replace --profile work --yes
+```
+
+`cloak mcp install` remains available for servers outside the catalog. It installs inside the
+selected `cloak` profile using each supported CLI's native syntax:
 
 - `codex`: maps to `codex mcp add ...`
 - `claude`: maps to `claude mcp add ...`
@@ -170,6 +187,16 @@ cloak mcp install codex filesystem --all-profiles -- npx @modelcontextprotocol/s
 
 If you omit both `--profile` and `--all-profiles` in an interactive terminal, `cloak` resolves the
 current profile first and then asks whether you want to apply the install to all profiles.
+
+Use `cloak mcp remove <name>` to remove a registration. Missing entries are reported as
+`not installed`, so repeating the command is safe. Use `cloak mcp doctor` to read the registered
+stdio servers, perform a real JSON-RPC `initialize` handshake and optionally run `tools/list`:
+
+```bash
+cloak mcp remove filesystem --profile work --for codex --dry-run
+cloak mcp remove filesystem --profile work --for codex --yes
+cloak mcp doctor --profile work --with-tools
+```
 
 ---
 
@@ -210,14 +237,18 @@ config_dir_env = "GEMINI_CLI_HOME"
 remove_env_vars = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
 ```
 
-Adding a new CLI is as simple as adding a new `[cli.<name>]` block.
+Profile management is currently enabled only for `claude`, `codex`, and `gemini`. Additional
+`[cli.<name>]` blocks are parsed, but they do not opt a CLI into `exec`, `login`, or profile
+creation; unsupported names fail with a `temporarily disabled` error.
 If your config was created before Gemini support, run `cloak doctor` and accept the optional migration prompt to append missing recommended CLI blocks.
 
 `cloak profile account <name>` iterates over the CLIs configured under `[cli.*]`, so adding a new
 block also makes that CLI show up in account inspection output.
 
-For editor-style apps, `config_dir_env` is optional. You can also prepend launch arguments and set
-extra environment variables with `{profile_dir}`, `{profile_name}`, and `{cli_name}` placeholders:
+The config schema also supports an optional `config_dir_env`, prepended `launch_args`, and
+`extra_env` values with `{profile_dir}`, `{profile_name}`, and `{cli_name}` placeholders. The
+following Cursor/VS Code shape remains useful as configuration reference, but those CLI names are
+not enabled by the current profile-management allowlist:
 
 ```toml
 [cli.cursor]
@@ -233,13 +264,12 @@ binary = "code"
 launch_args = ["--user-data-dir", "{profile_dir}", "--extensions-dir", "{profile_dir}/extensions", "--new-window"]
 ```
 
-That pattern is important for VS Code/Cursor-style editors because a reused GUI instance can keep a
-different logged-in account even when `.cloak` resolves the right profile.
+If editor profile management is re-enabled, that pattern avoids reusing a GUI instance that is
+already logged into another account.
 
-On WSL with the Windows `cursor` wrapper (`/mnt/c/.../cursor/resources/app/bin/cursor`), `cloak`
-keeps using the normal wrapper so the launch flow still matches `cursor .` and goes through
-Remote WSL integration. In that mode it also sets a profile-specific `VSCODE_AGENT_FOLDER`, which
-isolates the remote server state (`~/.cursor-server` by default) per `cloak` profile.
+The execution layer retains Cursor/WSL-specific launch handling, including a profile-specific
+`VSCODE_AGENT_FOLDER`, but it is currently unreachable through `cloak exec cursor` while Cursor is
+outside the enabled CLI allowlist.
 
 Known limitation: this improves state isolation for Cursor/VS Code-style editors, but it does not
 guarantee separate extension logins per `cloak` profile. Some extensions, including Codex, may also
@@ -263,8 +293,14 @@ cloak profile create <name>        Create profile dirs (+ Claude statusline temp
 cloak profile delete <name> [-y]   Delete a profile
 cloak profile show                 Show resolved profile and env paths for each CLI
 cloak login <cli> [profile]        Run a CLI in profile context for interactive auth
+cloak mcp add [name]               List the built-in catalog or install a catalog entry
 cloak mcp install <cli> <name>     Install an MCP server using the target CLI's native syntax
-cloak doctor                       Run health checks
+cloak mcp remove <name>            Remove an MCP registration (idempotent when absent)
+cloak mcp doctor                   Probe configured stdio MCPs through JSON-RPC
+cloak permission ask [--agent X]  Configure agent permissions interactively
+cloak backup [options]             Create an encrypted allowlisted backup
+cloak restore <archive> [options]  Restore profiles with identity and format checks
+cloak doctor                       Check config, binaries, profiles and backup tools
 cloak completions <shell>          Print shell completion script
 ```
 
@@ -287,11 +323,14 @@ Visual example of the feature in action, launching the CLI with isolated profile
 ```text
 src/
 ├── account.rs    — Per-CLI credential/account inspection helpers
+├── backup.rs     — Encrypted backup/restore, manifest and path rewriting
 ├── main.rs       — CLI entry point, command dispatch (clap + derive)
 ├── cli.rs        — Argument structs and subcommand definitions
 ├── config.rs     — Config file parsing and defaults (serde + toml)
 ├── exec.rs       — Profile resolution + env setup + exec(2) wrapper
 ├── mcp.rs        — Per-CLI MCP install adapters (`claude` / `codex`)
+├── mcp_doctor.rs — MCP config discovery and JSON-RPC health probes
+├── mcp_registry.rs — Built-in/user registry parsing and variable expansion
 ├── paths.rs      — XDG-compliant path resolution for config/profiles
 ├── profile.rs    — .cloak resolution and local profile file handling
 └── doctor.rs     — Health check diagnostics
@@ -323,8 +362,11 @@ never overwritten.
 
 ## Security
 
-- `cloak` **never stores or encrypts credentials** — it only redirects config homes.
+- Runtime isolation redirects each CLI home and does not implement OAuth itself.
+- Backups are always encrypted with GPG/AES-256; OAuth files are excluded unless
+  `--include-credentials` is explicitly passed.
 - Profile and CLI directories are created with **owner-only permissions** (`0700`) on Unix.
+- Files created or restored by `cloak`, including backup artifacts, use `0600` on Unix.
 - Conflicting env vars are **stripped** before exec so no ambient credential leaks into a session.
 
 ---
@@ -337,7 +379,9 @@ cargo fmt       # format
 cargo clippy    # lint
 ```
 
-Integration tests live in `tests/exec_integration.rs` and validate the full `cloak exec` pipeline with a mock binary: env wiring, API key removal and default-profile fallback.
+Integration tests live in `tests/exec_integration.rs` and `tests/backup_integration.rs`. They cover
+the execution/MCP flows with mock binaries and real encrypted backup/restore flows when GPG is
+available.
 
 ---
 
