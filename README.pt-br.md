@@ -46,10 +46,13 @@ Sem wrappers rodando em segundo plano. Sem daemons. Sem estado persistente. Apen
 | 🔒 **Isolamento de credenciais** | Variáveis de ambiente conflitantes (ex: `ANTHROPIC_API_KEY`) são removidas antes do exec |
 | 🔍 **Resolução automática** | Percorre até a raiz; faz fallback para `default_profile` da configuração |
 | 👤 **Inspeção de conta** | Mostra com qual conta cada CLI do perfil parece estar autenticada |
+| 📊 **Limites locais de uso** | Lê snapshots de Claude e Codex e ranqueia perfis pela capacidade semanal disponível |
 | 🩺 **Comando doctor** | Valida a configuração, binários, estrutura do perfil e dicas de credenciais |
 | 💻 **Completions de shell** | Bash, Zsh, Fish, PowerShell e Elvish |
 | 🖥️ **Statusline do Claude** | Provisiona automaticamente um script de statusline mostrando modelo/contexto/custo e persistindo snapshots de limites |
-| 🔌 **Helper para instalar MCP** | Instala MCPs usando a sintaxe nativa das CLIs suportadas e mantendo o escopo por perfil |
+| 🔌 **Ciclo de vida de MCPs** | Catálogo, instalação nativa, remoção idempotente e diagnóstico JSON-RPC por perfil |
+| 🛡️ **Política de permissões** | Questionário para shell, arquivos, rede e comandos, com sincronização para perfis Claude |
+| 📦 **Backup e restauração cifrados** | Conhecimento selecionado por allowlist, credenciais opcionais, merge seguro e reescrita de caminhos |
 
 ---
 
@@ -99,9 +102,12 @@ cloak profile show
 cloak profile account work
 cloak limits work
 
-# 6. Instale MCPs dentro do perfil
-cloak mcp install codex filesystem --profile work -- npx @modelcontextprotocol/server-filesystem /tmp
-cloak mcp install claude sentry --profile work --transport http --url https://mcp.sentry.dev/mcp -H "Authorization: Bearer token"
+# 6. Instale um MCP do catálogo embutido
+cloak mcp add filesystem --for codex,claude --profile work --yes
+
+# 7. Confira e gere um backup cifrado
+cloak backup --dry-run
+cloak backup
 ```
 
 `cloak profile account <nome>` inspeciona cada home de CLI configurada dentro do perfil e imprime o
@@ -141,8 +147,19 @@ gemini -> Gem User <gem@example.com>
 Snapshots frescos aparecem primeiro; snapshots expirados continuam visiveis para referencia, mas
 ficam ordenados depois das linhas frescas e marcados com `expired *` em `Resets`.
 
-`cloak mcp install` instala servidores MCP dentro do perfil selecionado no `cloak`, traduzindo a
-configuracao para a sintaxe nativa de cada CLI suportada:
+`cloak mcp add` é o caminho mais rápido: sem nome, lista o catálogo embutido; com um nome,
+resolve transporte, comando e CLIs suportadas. Use `--show` para conferir os comandos nativos e
+`--replace` para uma reinstalação idempotente:
+
+```bash
+cloak mcp add
+cloak mcp add gitnexus --for codex,claude --profile work --yes
+cloak mcp add sentry --show
+cloak mcp add filesystem --replace --profile work --yes
+```
+
+`cloak mcp install` continua disponível para servidores fora do catálogo. Ele instala dentro do
+perfil selecionado usando a sintaxe nativa de cada CLI suportada:
 
 - `codex`: vira `codex mcp add ...`
 - `claude`: vira `claude mcp add ...`
@@ -166,6 +183,17 @@ cloak mcp install codex filesystem --all-profiles -- npx @modelcontextprotocol/s
 
 Se voce nao passar `--profile` nem `--all-profiles` em um terminal interativo, o `cloak` resolve o
 perfil atual primeiro e depois pergunta se voce quer aplicar a instalacao em todos os perfis.
+
+Use `cloak mcp remove <nome>` para remover um registro. Entradas ausentes aparecem como
+`not installed`, portanto repetir o comando é seguro. Use `cloak mcp doctor` para ler os MCPs
+stdio registrados, executar um handshake JSON-RPC `initialize` real e, opcionalmente, chamar
+`tools/list`:
+
+```bash
+cloak mcp remove filesystem --profile work --for codex --dry-run
+cloak mcp remove filesystem --profile work --for codex --yes
+cloak mcp doctor --profile work --with-tools
+```
 
 ---
 
@@ -206,15 +234,18 @@ config_dir_env = "GEMINI_CLI_HOME"
 remove_env_vars = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
 ```
 
-Adicionar uma nova CLI é tão simples quanto adicionar um novo bloco `[cli.<nome>]`.
+O gerenciamento de perfis está habilitado atualmente apenas para `claude`, `codex` e `gemini`.
+Blocos `[cli.<nome>]` adicionais são interpretados, mas não habilitam a CLI em `exec`, `login` ou
+na criação de perfis; nomes não suportados falham com erro `temporarily disabled`.
 Se seu config foi criado antes do suporte ao Gemini, rode `cloak doctor` e aceite o prompt opcional de migração para incluir os blocos recomendados ausentes.
 
 `cloak profile account <nome>` percorre as CLIs configuradas em `[cli.*]`, então adicionar um novo
 bloco tambem faz essa CLI aparecer na saída de inspeção de conta.
 
-Para apps estilo editor, `config_dir_env` passa a ser opcional. Agora tambem da para acrescentar
-argumentos de launch e envs extras com placeholders `{profile_dir}`, `{profile_name}` e
-`{cli_name}`:
+O schema também aceita `config_dir_env` opcional, `launch_args` prefixados e valores `extra_env`
+com placeholders `{profile_dir}`, `{profile_name}` e `{cli_name}`. O formato abaixo para
+Cursor/VS Code continua útil como referência de configuração, mas esses nomes não estão habilitados
+na allowlist atual de gerenciamento de perfis:
 
 ```toml
 [cli.cursor]
@@ -230,14 +261,12 @@ binary = "code"
 launch_args = ["--user-data-dir", "{profile_dir}", "--extensions-dir", "{profile_dir}/extensions", "--new-window"]
 ```
 
-Esse padrao e importante para editores estilo VS Code/Cursor porque uma instancia GUI reaproveitada
-pode manter outra conta logada mesmo quando o `.cloak` resolve o perfil correto.
+Se o gerenciamento de perfis de editores for reativado, esse padrão evita reutilizar uma instância
+GUI que já esteja autenticada em outra conta.
 
-No WSL com o wrapper Windows do `cursor` (`/mnt/c/.../cursor/resources/app/bin/cursor`), o
-`cloak` continua usando o wrapper normal para que o fluxo de abertura siga igual ao `cursor .` e
-passe pela integracao Remote WSL. Nesse modo ele tambem define um `VSCODE_AGENT_FOLDER` por
-perfil, isolando por perfil o estado remoto do servidor (que por padrao fica em
-`~/.cursor-server`).
+A camada de execução mantém tratamento específico de Cursor/WSL, inclusive um
+`VSCODE_AGENT_FOLDER` por perfil, mas esse caminho está inacessível por `cloak exec cursor`
+enquanto Cursor estiver fora da allowlist de CLIs habilitadas.
 
 Limitacao conhecida: isso melhora o isolamento de estado em editores estilo Cursor/VS Code, mas
 nao garante logins separados de extensao por perfil do `cloak`. Algumas extensoes, incluindo o
@@ -261,8 +290,14 @@ cloak profile create <nome>        Cria diretórios de perfil (+ template de sta
 cloak profile delete <nome> [-y]   Deleta um perfil
 cloak profile show                 Mostra o perfil resolvido e caminhos de env para cada CLI
 cloak login <cli> [profile]        Executa uma CLI no contexto do perfil para auth interativa
+cloak mcp add [nome]               Lista o catálogo embutido ou instala uma entrada
 cloak mcp install <cli> <nome>     Instala um servidor MCP usando a sintaxe nativa da CLI alvo
-cloak doctor                       Roda verificações de saúde
+cloak mcp remove <nome>            Remove um registro MCP (idempotente quando ausente)
+cloak mcp doctor                   Testa MCPs stdio configurados via JSON-RPC
+cloak permission ask [--agent X]  Configura permissões do agente interativamente
+cloak backup [opções]            Cria um backup cifrado baseado em allowlist
+cloak restore <arquivo> [opções] Restaura perfis com checagens de identidade e formato
+cloak doctor                       Verifica config, binários, perfis e ferramentas de backup
 cloak completions <shell>          Imprime script de autocompletar do shell
 ```
 
@@ -282,11 +317,14 @@ Exemplo visual da feature em uso, executando a CLI com perfis isolados no moment
 ```text
 src/
 ├── account.rs    — Helpers de inspecao de credenciais/conta por CLI
+├── backup.rs     — Backup/restore cifrado, manifesto e reescrita de caminhos
 ├── main.rs       — Ponto de entrada da CLI, despacho de comandos (clap + derive)
 ├── cli.rs        — Structs de argumentos e definições de subcomandos
 ├── config.rs     — Parsing do arquivo de configuração e padrões (serde + toml)
 ├── exec.rs       — Resolução de perfil + configuração de env + wrapper de exec(2)
 ├── mcp.rs        — Adaptadores de instalação de MCP por CLI (`claude` / `codex`)
+├── mcp_doctor.rs — Descoberta de configs MCP e diagnóstico JSON-RPC
+├── mcp_registry.rs — Leitura dos catálogos embutido/local e expansão de variáveis
 ├── paths.rs      — Resolução de caminhos em conformidade com XDG para config/perfis
 ├── profile.rs    — Operações CRUD de perfil e provisionamento de statusline
 └── doctor.rs     — Diagnósticos e verificações de saúde
@@ -318,8 +356,11 @@ contexto / custo** (requer `jq`) e persiste o snapshot mais recente de `rate_lim
 
 ## Segurança
 
-- O `cloak` **nunca armazena ou criptografa credenciais** — ele apenas redireciona os diretórios de config (homes).
+- No uso normal, o `cloak` redireciona os homes das CLIs e não implementa OAuth por conta própria.
+- Backups são sempre cifrados com GPG/AES-256; arquivos OAuth só entram quando
+  `--include-credentials` é informado explicitamente.
 - Diretórios de perfil e CLI são criados com **permissões apenas para o proprietário** (`0700`) no Unix.
+- Arquivos criados ou restaurados pelo `cloak`, inclusive artefatos de backup, usam `0600` no Unix.
 - Variáveis de ambiente conflitantes são **removidas** antes do exec para que nenhuma credencial de ambiente vaze para uma sessão.
 
 ---
@@ -332,7 +373,9 @@ cargo fmt       # formatação
 cargo clippy    # linting
 ```
 
-Os testes de integração ficam em `tests/exec_integration.rs` e validam o pipeline completo do `cloak exec` com um binário mock: ligação de env, remoção de chave de API e fallback para perfil padrão.
+Os testes de integração ficam em `tests/exec_integration.rs` e `tests/backup_integration.rs`.
+Eles cobrem execução/MCP com binários mock e fluxos reais de backup/restore cifrado quando o
+GPG está disponível.
 
 ---
 
