@@ -5,7 +5,7 @@
 Instale globalmente:
 
 ```bash
-cd /home/junior/apps/jm/cloak
+cd cloak
 cargo install --path . --force
 ```
 
@@ -33,48 +33,19 @@ cloak profile show
 
 Cheque se existe um `.cloak` em diretorio pai que esta ganhando prioridade.
 
-## Editor abre com a conta errada de vez em quando
+## `cloak exec cursor` (ou outra CLI customizada) está temporariamente desabilitado
 
-Isso normalmente acontece com apps GUI como VS Code ou Cursor quando a CLI reaproveita uma
-instancia ja aberta, que estava autenticada em outra conta.
-
-Quando `cloak exec cursor ...` roda em um terminal interativo, o `cloak` agora abre o Cursor como
-processo filho desacoplado, em vez de substituir o processo do shell com `exec(2)`. Isso evita que
-o terminal fique bloqueado ate a janela do editor ser fechada.
-
-Configure o editor com isolamento por perfil no launch:
-
-```toml
-[cli.cursor]
-binary = "cursor"
-launch_args = ["--user-data-dir", "{profile_dir}", "--extensions-dir", "{profile_dir}/extensions", "--new-window"]
-
-[cli.cursor.extra_env]
-CURSOR_USER_DATA_DIR = "{profile_dir}"
-CURSOR_EXTENSIONS_DIR = "{profile_dir}/extensions"
-```
-
-No VS Code, use o mesmo padrao de `launch_args` com `binary = "code"`.
-
-No WSL, o `cloak` agora continua usando o wrapper normal do `cursor`
-(`/mnt/c/.../cursor/resources/app/bin/cursor`), para que o fluxo de abertura seja o mesmo de
-`cursor .` e ainda passe pela integracao Remote WSL do Cursor. Nesse modo o `cloak` tambem define
-um `VSCODE_AGENT_FOLDER` por perfil, para que o estado remoto do servidor (inclusive
-`globalStorage`) nao volte a cair em `~/.cursor-server`. Se ainda aparecer algo como:
+Adicionar `[cli.cursor]`, `[cli.vscode]` ou outro bloco customizado não habilita a execução por
+perfil. A allowlist compilada atual contém apenas `claude`, `codex` e `gemini`, portanto o erro
+esperado é:
 
 ```text
-Ignoring option 'user-data-dir': not supported for cursor.
-Ignoring option 'extensions-dir': not supported for cursor.
+profile management for CLI 'cursor' is temporarily disabled; enabled CLIs: claude, codex, gemini
 ```
 
-entao o estado GUI do Cursor ainda esta caindo no perfil global do Windows.
-
-Limitacao conhecida: mesmo quando o `cloak` isola `user-data`, `extensions-dir` e
-`VSCODE_AGENT_FOLDER`, algumas extensoes ainda podem reutilizar credenciais do SecretStorage do
-editor ou do keyring do sistema. Na pratica isso significa que perfis diferentes do `cloak` nao
-garantem contas diferentes de extensao dentro da mesma instalacao do Cursor ou do VS Code. Trate
-multi-conta da extensao Codex como um fluxo nao suportado, a menos que isso seja comprovado no seu
-ambiente.
+Esse é um limite do produto, não um `config.toml` malformado. O schema e a camada de execução
+mantêm `launch_args`, `extra_env`, launch desacoplado e helpers de WSL voltados a editores, mas
+esses caminhos não podem ser alcançados enquanto a CLI não for habilitada na implementação.
 
 ## `doctor` mostra "no credential file detected"
 
@@ -172,3 +143,56 @@ cloak doctor
 ```
 
 Se faltar `gemini` (ou outro bloco recomendado), o `doctor` oferece um prompt opcional de migracao para incluir o bloco default.
+
+## `mcp doctor` reporta falha no handshake
+
+Comece pelo perfil e servidor exatos para manter a saída focada:
+
+```bash
+cloak mcp doctor --profile <perfil> --name <servidor> --timeout 10 --with-tools
+```
+
+Para servidores stdio, confira o stderr capturado, confirme que o comando configurado está no
+`PATH` e valide as variáveis de ambiente exigidas no perfil. Entradas HTTP/SSE remotas aparecem
+como ignoradas porque o `mcp doctor` só executa probes ativos em transportes stdio.
+
+Se o registro estiver desatualizado, confira uma reinstalação idempotente:
+
+```bash
+cloak mcp add <servidor> --profile <perfil> --show
+cloak mcp add <servidor> --profile <perfil> --replace --yes
+```
+
+## Backup ou restore não encontra `tar`, `gzip` ou `gpg`
+
+Rode:
+
+```bash
+cloak doctor
+```
+
+A seção `Backup Tools` verifica os três binários e faz uma cifragem de teste real com GPG.
+Instale ou corrija a ferramenta ausente antes de tentar de novo; apenas encontrar o executável
+`gpg` não é considerado suficiente.
+
+## GPG recusa a passphrase do backup
+
+Execuções interativas usam o `pinentry` do GPG. Em modo não interativo, forneça a mesma
+passphrase em `CLOAK_BACKUP_PASSPHRASE` tanto no backup quanto no restore. Um backup com falha
+remove a saída `.partial`; a ausência de um novo artefato final não significa perda de um backup
+anterior já concluído.
+
+## Restore exige `--force`
+
+`--force` é exigido quando o perfil de destino já existe ou quando a identidade por uid/OAuth não
+pode ser verificada. A flag permite o merge e ignora checagens de identidade, mas não apaga
+arquivos exclusivos do destino.
+
+Não use `--force` para contornar este erro:
+
+```text
+este artefato usa o formato de backup vN e este cloak suporta ate vM
+```
+
+Uma `format_version` mais nova nunca é ignorada. Atualize o `cloak` para uma versão compatível com
+o artefato.
