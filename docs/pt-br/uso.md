@@ -361,11 +361,16 @@ A seleção usa uma allowlist, não uma cópia integral do perfil. Entram:
 - do `claude`: `statusline-command.sh`, `plans/`, memórias de projeto em
   `projects/*/memory/` e os manifestos de plugin (`plugins/installed_plugins.json`,
   `plugins/known_marketplaces.json`, `plugins/blocklist.json`);
-- do `codex`: `config.toml`, `hooks.json` e o diretório `memories/`.
+- do `codex`: `config.toml`, `hooks.json` e o diretório `memories/`;
+- do `gemini`: `.gemini/settings.json` e os arquivos `*.md` de `.gemini/` (incluindo o
+  `GEMINI.md`). O `gemini` aninha toda a configuração em `<perfil>/gemini/.gemini/`, então os
+  padrões de topo não alcançam nada dele.
 - o `config.toml` global do Cloak e um `manifest.json` versionado na raiz do artefato.
 
-Ficam de fora sessões, logs, caches, plugins baixados e histórico de projetos. Em perfis reais
-isso costuma reduzir vários GB para poucos MB.
+Ficam de fora sessões, logs, caches, plugins baixados e histórico de projetos. No `gemini` isso
+inclui `history/`, `tmp/`, os caches de IDE sob `.gemini/antigravity*` e o estado de máquina
+(`installation_id`, `state.json`, `projects.json`, `trustedFolders.json`), reconstruído pela CLI.
+Em perfis reais isso costuma reduzir vários GB para poucos MB.
 
 A cada backup, o `cloak` lista o que encontrou no perfil e **não** entrou no artefato — isso
 existe porque uma allowlist, por natureza, omite o desconhecido, e o relatório garante que uma
@@ -375,10 +380,14 @@ que ficou de fora.
 
 ### Credenciais
 
-`claude/.credentials.json` e `codex/auth.json` ficam **fora do backup por padrão**. São tokens
-OAuth que expiram e podem ser regenerados em minutos com `cloak login` na máquina de destino. Use
+`claude/.credentials.json`, `codex/auth.json`, `gemini/.gemini/oauth_creds.json` e
+`gemini/.gemini/.env` ficam **fora do backup por padrão**. São tokens OAuth e chaves de API que
+expiram e podem ser regenerados em minutos com `cloak login` na máquina de destino. Use
 `--include-credentials` para incluí-los explicitamente — nesse caso, um vazamento do artefato
 junto com a passphrase dá acesso direto às contas, então avalie o risco antes de usar essa flag.
+
+Com `--include-credentials`, esses arquivos passam a contar como cobertos: deixam de aparecer no
+relatório de não-cobertos e no `uncovered` do manifesto, porque estão dentro do artefato.
 
 ### Configuração em `config.toml`
 

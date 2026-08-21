@@ -316,6 +316,45 @@ config_dir_env = "CLAUDE_CONFIG_DIR"
             .collect()
     }
 
+    fn tar_extract_to(archive: &Path, dest: &Path) {
+        fs::create_dir_all(dest).expect("mkdir extract dest");
+        let output = Command::new("tar")
+            .arg("-xzf")
+            .arg(archive)
+            .arg("-C")
+            .arg(dest)
+            .output()
+            .expect("run tar -xzf");
+        assert!(
+            output.status.success(),
+            "tar -xzf failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Lê o `ProfileManifest.uncovered` serializado dentro do artefato.
+    fn manifest_uncovered_paths(artifact: &Path, tmp: &Path, passphrase: &str) -> Vec<String> {
+        let tar_tmp = tmp.join("manifest-check.tar.gz");
+        gpg_decrypt_to(artifact, &tar_tmp, passphrase);
+        let extracted = tmp.join("manifest-check");
+        tar_extract_to(&tar_tmp, &extracted);
+        let raw = fs::read_to_string(extracted.join("manifest.json")).expect("read manifest.json");
+        let value: serde_json::Value = serde_json::from_str(&raw).expect("parse manifest.json");
+        value["profiles"]
+            .as_array()
+            .expect("profiles array")
+            .iter()
+            .flat_map(|p| {
+                p["uncovered"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+            })
+            .filter_map(|u| u["path"].as_str().map(str::to_string))
+            .collect()
+    }
+
     fn find_artifact(out_dir: &Path) -> PathBuf {
         fs::read_dir(out_dir)
             .expect("read out_dir")
@@ -648,6 +687,244 @@ config_dir_env = "CLAUDE_CONFIG_DIR"
             "no .gpg or .gpg.partial file may remain in output_dir after an \
              encryption failure; found: {leftovers:?}"
         );
+    }
+
+    fn seed_gemini_profile(xdg: &Path) {
+        let gemini = xdg.join("cloak/profiles/demo/gemini/.gemini");
+        fs::create_dir_all(gemini.join("tmp")).expect("mkdir .gemini/tmp");
+        fs::create_dir_all(gemini.join("history")).expect("mkdir .gemini/history");
+        fs::write(
+            gemini.join("settings.json"),
+            r#"{"model":{"name":"gemini-3.1-pro-preview"}}"#,
+        )
+        .expect("gemini settings");
+        fs::write(gemini.join("GEMINI.md"), "memoria do gemini").expect("GEMINI.md");
+        fs::write(gemini.join("oauth_creds.json"), r#"{"id_token":"x"}"#).expect("creds");
+        fs::write(gemini.join("installation_id"), "abc").expect("installation_id");
+        fs::write(gemini.join("tmp/scratch.json"), "lixo").expect("tmp file");
+        fs::write(gemini.join("history/h.json"), "lixo").expect("history file");
+    }
+
+    #[test]
+    fn backup_and_restore_cover_gemini_profile() {
+        // REGRESSAO: `allowlist_patterns` so tinha arm para claude e codex, e o
+        // gemini aninha tudo em `gemini/.gemini/`. O artefato saia SEM NADA de
+        // um perfil gemini e a subarvore inteira virava uma linha agregada
+        // `gemini/.gemini` no relatorio.
+        if !gpg_available() {
+            eprintln!("skipping: gpg not available");
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let xdg = tmp.path().join("xdg");
+        write_config(&xdg);
+        seed_gemini_profile(&xdg);
+        let out_dir = tmp.path().join("backups");
+
+        let output = Command::new(cloak_bin())
+            .arg("backup")
+            .arg("--output")
+            .arg(&out_dir)
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .output()
+            .expect("run backup");
+        assert!(
+            output.status.success(),
+            "backup failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !stdout.contains("gemini/.gemini ("),
+            "a subarvore .gemini inteira nao pode ser reportada como fora:\n{stdout}"
+        );
+
+        let artifact = find_artifact(&out_dir);
+        let tar_tmp = tmp.path().join("decrypted.tar.gz");
+        gpg_decrypt_to(&artifact, &tar_tmp, "test-pass");
+        let entries = tar_list_entries(&tar_tmp);
+
+        assert!(
+            entries
+                .iter()
+                .any(|e| e == "profiles/demo/gemini/.gemini/settings.json"),
+            "settings.json do gemini fora do artefato: {entries:?}"
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e == "profiles/demo/gemini/.gemini/GEMINI.md"),
+            "GEMINI.md fora do artefato: {entries:?}"
+        );
+        assert!(
+            !entries.iter().any(|e| e.contains("oauth_creds.json")),
+            "credencial do gemini nao pode entrar sem --include-credentials: {entries:?}"
+        );
+        assert!(
+            !entries.iter().any(|e| e.contains("/tmp/")),
+            "lixo de tmp/ nao pode entrar: {entries:?}"
+        );
+        assert!(
+            !entries.iter().any(|e| e.contains("installation_id")),
+            "estado da maquina de origem nao pode entrar: {entries:?}"
+        );
+
+        // Restore devolve o conteudo do gemini.
+        fs::remove_dir_all(xdg.join("cloak/profiles/demo")).expect("rm profile");
+        let output = Command::new(cloak_bin())
+            .arg("restore")
+            .arg(&artifact)
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .output()
+            .expect("run restore");
+        assert!(
+            output.status.success(),
+            "restore failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let gemini = xdg.join("cloak/profiles/demo/gemini/.gemini");
+        assert!(
+            gemini.join("settings.json").exists(),
+            "settings.json do gemini nao voltou no restore"
+        );
+        assert!(
+            gemini.join("GEMINI.md").exists(),
+            "GEMINI.md nao voltou no restore"
+        );
+    }
+
+    #[test]
+    fn backup_includes_gemini_credentials_with_flag() {
+        if !gpg_available() {
+            eprintln!("skipping: gpg not available");
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let xdg = tmp.path().join("xdg");
+        write_config(&xdg);
+        seed_gemini_profile(&xdg);
+        let out_dir = tmp.path().join("backups");
+
+        let status = Command::new(cloak_bin())
+            .arg("backup")
+            .arg("--output")
+            .arg(&out_dir)
+            .arg("--include-credentials")
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .status()
+            .expect("run backup");
+        assert!(status.success(), "backup failed");
+
+        let artifact = find_artifact(&out_dir);
+        let tar_tmp = tmp.path().join("decrypted.tar.gz");
+        gpg_decrypt_to(&artifact, &tar_tmp, "test-pass");
+        let entries = tar_list_entries(&tar_tmp);
+        assert!(
+            entries
+                .iter()
+                .any(|e| e == "profiles/demo/gemini/.gemini/oauth_creds.json"),
+            "credencial do gemini precisa entrar com --include-credentials: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn included_credentials_are_not_reported_as_uncovered() {
+        // REGRESSAO: com --include-credentials, o stdout imprimia
+        // "NAO incluido (fora da allowlist): claude/.credentials.json" e o
+        // manifesto serializava a mesma mentira, para um arquivo que estava
+        // dentro do payload.
+        if !gpg_available() {
+            eprintln!("skipping: gpg not available");
+            return;
+        }
+
+        // Com a flag: nem no stdout nem no manifesto.
+        {
+            let tmp = tempdir().expect("tempdir");
+            let xdg = tmp.path().join("xdg");
+            write_config(&xdg);
+            seed_profile_with_credentials(&xdg);
+            let out_dir = tmp.path().join("backups");
+
+            let output = Command::new(cloak_bin())
+                .arg("backup")
+                .arg("--output")
+                .arg(&out_dir)
+                .arg("--include-credentials")
+                .env("XDG_CONFIG_HOME", &xdg)
+                .env("HOME", tmp.path())
+                .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+                .output()
+                .expect("run backup");
+            assert!(output.status.success(), "backup failed");
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                !stdout.contains(".credentials.json"),
+                "credencial dentro do payload nao pode ser listada como fora \
+                 da allowlist:\n{stdout}"
+            );
+
+            let artifact = find_artifact(&out_dir);
+            let uncovered = manifest_uncovered_paths(&artifact, tmp.path(), "test-pass");
+            assert!(
+                !uncovered.iter().any(|p| p.contains(".credentials.json")),
+                "manifesto nao pode negar credencial que esta no payload: {uncovered:?}"
+            );
+
+            let tar_tmp = tmp.path().join("decrypted.tar.gz");
+            gpg_decrypt_to(&artifact, &tar_tmp, "test-pass");
+            let entries = tar_list_entries(&tar_tmp);
+            assert!(
+                entries
+                    .iter()
+                    .any(|e| e == "profiles/demo/claude/.credentials.json"),
+                "credencial precisa estar no payload: {entries:?}"
+            );
+        }
+
+        // Sem a flag: continua aparecendo como nao coberta nos dois lugares.
+        {
+            let tmp = tempdir().expect("tempdir");
+            let xdg = tmp.path().join("xdg");
+            write_config(&xdg);
+            seed_profile_with_credentials(&xdg);
+            let out_dir = tmp.path().join("backups");
+
+            let output = Command::new(cloak_bin())
+                .arg("backup")
+                .arg("--output")
+                .arg(&out_dir)
+                .env("XDG_CONFIG_HOME", &xdg)
+                .env("HOME", tmp.path())
+                .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+                .output()
+                .expect("run backup");
+            assert!(output.status.success(), "backup failed");
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                stdout.contains("claude/.credentials.json"),
+                "sem a flag a credencial precisa continuar no relatorio:\n{stdout}"
+            );
+
+            let artifact = find_artifact(&out_dir);
+            let uncovered = manifest_uncovered_paths(&artifact, tmp.path(), "test-pass");
+            assert!(
+                uncovered.iter().any(|p| p == "claude/.credentials.json"),
+                "sem a flag a credencial precisa continuar no manifesto: {uncovered:?}"
+            );
+        }
     }
 
     #[test]

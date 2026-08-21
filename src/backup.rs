@@ -250,6 +250,23 @@ fn allowlist_patterns(cli_name: &str) -> Vec<&'static str> {
             "plans/",
         ]),
         "codex" => patterns.extend(["config.toml", "hooks.json", "memories/"]),
+        // O gemini aninha TUDO em `<perfil>/gemini/.gemini/` (`GEMINI_CLI_HOME`
+        // aponta para `<perfil>/gemini`, e a CLI cria `.gemini/` dentro).
+        // Os padroes de `COMMON_ALLOW` casam so no topo do diretorio do CLI,
+        // entao nenhum deles alcanca nada de um perfil gemini: sem este arm o
+        // artefato saia vazio e a subarvore inteira virava uma linha agregada
+        // `gemini/.gemini` no relatorio de nao-cobertos.
+        //
+        // O conjunto abaixo re-enraiza `settings.json` e `*.md` um nivel
+        // abaixo. `settings.json` e' o arquivo de configuracao que `account.rs`
+        // e `doctor.rs` ja leem; `*.md` cobre o `GEMINI.md`, o equivalente do
+        // `CLAUDE.md`/`AGENTS.md` que motivou a feature. Fora ficam
+        // `oauth_creds.json` e `.env` (credenciais, so com a flag),
+        // `history/`, `tmp/` e caches de IDE (volume: 1,5 GB medido em
+        // `~/.gemini/antigravity-ide`), e `installation_id`, `state.json`,
+        // `projects.json` e `trustedFolders.json` (estado da maquina de
+        // origem, que a CLI reconstroi).
+        "gemini" => patterns.extend([".gemini/settings.json", ".gemini/*.md"]),
         _ => {}
     }
     patterns
@@ -471,8 +488,46 @@ pub struct BackupOptions {
     pub dry_run: bool,
 }
 
-const CREDENTIAL_FILES: &[(&str, &str)] =
-    &[("claude", ".credentials.json"), ("codex", "auth.json")];
+/// Arquivos que carregam credencial e por isso ficam fora da allowlist,
+/// entrando apenas com `--include-credentials`.
+///
+/// Os caminhos sao relativos ao diretorio do CLI dentro do perfil. As duas
+/// entradas do gemini saem de `account.rs::inspect_gemini`, que le
+/// `.gemini/oauth_creds.json` (OAuth) e `.gemini/.env` (`GEMINI_API_KEY` /
+/// `GOOGLE_API_KEY`).
+const CREDENTIAL_FILES: &[(&str, &str)] = &[
+    ("claude", ".credentials.json"),
+    ("codex", "auth.json"),
+    ("gemini", ".gemini/oauth_creds.json"),
+    ("gemini", ".gemini/.env"),
+];
+
+/// Padroes que se somam a allowlist built-in para UM diretorio de CLI nesta
+/// execucao: os do usuario (`[backup].include`) mais, quando
+/// `--include-credentials` foi passado, as credenciais daquele CLI.
+///
+/// As credenciais entram por aqui, e nao por uma copia a parte, porque o
+/// relatorio de nao-cobertos e o `ProfileManifest.uncovered` sao derivados da
+/// allowlist. Copiar por fora deixava o manifesto afirmando
+/// "NAO incluido (fora da allowlist): claude/.credentials.json" para um
+/// arquivo que estava dentro do payload — a inversao acontecia justamente no
+/// arquivo mais sensivel, onde o relatorio e' a unica rede de seguranca.
+fn cli_extra_patterns(
+    cli_name: &str,
+    config_include: &[String],
+    include_credentials: bool,
+) -> Vec<String> {
+    let mut patterns = config_include.to_vec();
+    if include_credentials {
+        patterns.extend(
+            CREDENTIAL_FILES
+                .iter()
+                .filter(|(cli, _)| *cli == cli_name)
+                .map(|(_, file)| (*file).to_string()),
+        );
+    }
+    patterns
+}
 
 fn resolve_output_dir(config: &Config, opts: &BackupOptions) -> Result<PathBuf> {
     if let Some(dir) = &opts.output {
@@ -595,8 +650,9 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
                 continue;
             }
             let cli_name = entry.file_name().to_string_lossy().into_owned();
-            let (included, uncovered) =
-                collect_profile_entries(&cli_path, &cli_name, &extra_includes)?;
+            let cli_extra =
+                cli_extra_patterns(&cli_name, &extra_includes, opts.include_credentials);
+            let (included, uncovered) = collect_profile_entries(&cli_path, &cli_name, &cli_extra)?;
 
             for src in included {
                 let rel = src.strip_prefix(&profile_root).unwrap_or(&src);
@@ -617,21 +673,10 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
             }
         }
 
-        // Credenciais: incluídas apenas com a flag.
-        if opts.include_credentials {
-            for (cli_name, file) in CREDENTIAL_FILES {
-                let src = profile_dir.join(cli_name).join(file);
-                if src.exists() {
-                    let rel = src.strip_prefix(&profile_root).unwrap_or(&src);
-                    let dest = staging_profiles.join(rel);
-                    if let Some(parent) = dest.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-                    fs::copy(&src, &dest)?;
-                }
-            }
-        }
-
+        // As credenciais NAO sao copiadas aqui: com `--include-credentials`
+        // elas entram na allowlist do CLI via `cli_extra_patterns` e sao
+        // copiadas pelo mesmo laco dos demais incluidos. Assim o relatorio e o
+        // manifesto abaixo enxergam exatamente o que foi para o payload.
         print_backup_profile_report(profile, &all_uncovered);
         profile_manifests.push(build_profile_manifest(profile, all_uncovered));
     }
@@ -1274,6 +1319,192 @@ mod tests {
             Path::new("projects/-home-user-proj/abc-123/subagents/x.jsonl"),
             &[]
         ));
+    }
+
+    #[test]
+    fn test_allowlist_covers_gemini_config_and_memory() {
+        // REGRESSAO: nao existia arm "gemini" e o perfil inteiro ficava fora do
+        // backup. O gemini aninha TUDO em `<perfil>/gemini/.gemini/`, onde os
+        // padroes de topo do COMMON_ALLOW (`settings.json`, `*.md`) nao chegam.
+        assert!(is_allowed(
+            "gemini",
+            Path::new(".gemini/settings.json"),
+            &[]
+        ));
+        assert!(is_allowed("gemini", Path::new(".gemini/GEMINI.md"), &[]));
+        // Volume, estado de maquina e historico continuam fora.
+        assert!(!is_allowed(
+            "gemini",
+            Path::new(".gemini/tmp/a/b.json"),
+            &[]
+        ));
+        assert!(!is_allowed(
+            "gemini",
+            Path::new(".gemini/history/a/b.json"),
+            &[]
+        ));
+        assert!(!is_allowed(
+            "gemini",
+            Path::new(".gemini/installation_id"),
+            &[]
+        ));
+        assert!(!is_allowed("gemini", Path::new(".gemini/state.json"), &[]));
+        assert!(!is_allowed(
+            "gemini",
+            Path::new(".gemini/projects.json"),
+            &[]
+        ));
+        // Credencial so entra por --include-credentials, nunca pela allowlist.
+        assert!(!is_allowed(
+            "gemini",
+            Path::new(".gemini/oauth_creds.json"),
+            &[]
+        ));
+        assert!(!is_allowed("gemini", Path::new(".gemini/.env"), &[]));
+    }
+
+    #[test]
+    fn test_gemini_profile_is_not_entirely_uncovered() {
+        // REGRESSAO: um perfil so-gemini produzia UMA linha agregada
+        // `gemini/.gemini` no relatorio e zero arquivos no artefato.
+        let tmp = tempdir().expect("tempdir");
+        let cli_dir = tmp.path().join("gemini");
+        fs::create_dir_all(cli_dir.join(".gemini/tmp")).expect("mkdir");
+        fs::write(cli_dir.join(".gemini/settings.json"), "{}").expect("settings");
+        fs::write(cli_dir.join(".gemini/GEMINI.md"), "memoria").expect("md");
+        fs::write(cli_dir.join(".gemini/tmp/x.json"), "lixo").expect("tmp");
+
+        let (included, uncovered) =
+            collect_profile_entries(&cli_dir, "gemini", &[]).expect("collect");
+        let inc: Vec<String> = included
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&cli_dir)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert!(
+            inc.contains(&".gemini/settings.json".to_string()),
+            "settings do gemini precisa entrar no artefato; obtido: {inc:?}"
+        );
+        assert!(
+            inc.contains(&".gemini/GEMINI.md".to_string()),
+            "memoria do gemini precisa entrar no artefato; obtido: {inc:?}"
+        );
+
+        let unc: Vec<&str> = uncovered.iter().map(|u| u.path.as_str()).collect();
+        assert!(
+            !unc.contains(&".gemini"),
+            "a subarvore .gemini nao pode ser reportada inteira como fora; obtido: {unc:?}"
+        );
+        assert!(
+            unc.contains(&".gemini/tmp"),
+            "o lixo dentro de .gemini continua fora e precisa ser reportado; obtido: {unc:?}"
+        );
+    }
+
+    #[test]
+    fn test_cli_extra_patterns_gates_credentials_behind_the_flag() {
+        // Sem a flag, a credencial nao e' coberta por nada.
+        let without = cli_extra_patterns("claude", &[], false);
+        assert!(!is_allowed(
+            "claude",
+            Path::new(".credentials.json"),
+            &without
+        ));
+
+        // Com a flag, ela passa a ser coberta — e' isso que impede o relatorio
+        // e o manifesto de negarem um arquivo que esta' dentro do payload.
+        let with = cli_extra_patterns("claude", &[], true);
+        assert!(is_allowed("claude", Path::new(".credentials.json"), &with));
+
+        let codex = cli_extra_patterns("codex", &[], true);
+        assert!(is_allowed("codex", Path::new("auth.json"), &codex));
+
+        let gemini = cli_extra_patterns("gemini", &[], true);
+        assert!(is_allowed(
+            "gemini",
+            Path::new(".gemini/oauth_creds.json"),
+            &gemini
+        ));
+        assert!(is_allowed("gemini", Path::new(".gemini/.env"), &gemini));
+
+        // A credencial de um CLI nao vaza para outro.
+        assert!(!is_allowed("codex", Path::new(".credentials.json"), &codex));
+
+        // Os padroes do usuario continuam somados.
+        let user = cli_extra_patterns("claude", &["extra/*.json".to_string()], false);
+        assert!(is_allowed("claude", Path::new("extra/a.json"), &user));
+    }
+
+    #[test]
+    fn test_included_credential_is_not_listed_as_uncovered() {
+        // REGRESSAO: o relatorio e o manifesto afirmavam
+        // "NAO incluido (fora da allowlist): claude/.credentials.json"
+        // para um arquivo que estava dentro do payload.
+        let tmp = tempdir().expect("tempdir");
+        let cli_dir = tmp.path().join("claude");
+        fs::create_dir_all(&cli_dir).expect("mkdir");
+        fs::write(cli_dir.join("settings.json"), "{}").expect("settings");
+        fs::write(cli_dir.join(".credentials.json"), "{\"tok\":1}").expect("creds");
+
+        let with = cli_extra_patterns("claude", &[], true);
+        let (included, uncovered) =
+            collect_profile_entries(&cli_dir, "claude", &with).expect("collect");
+        let inc: Vec<String> = included
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&cli_dir)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert!(inc.contains(&".credentials.json".to_string()));
+        let unc: Vec<&str> = uncovered.iter().map(|u| u.path.as_str()).collect();
+        assert!(
+            !unc.contains(&".credentials.json"),
+            "credencial copiada para o artefato nao pode ser reportada como fora: {unc:?}"
+        );
+
+        // Sem a flag, ela continua fora e continua aparecendo no relatorio.
+        let without = cli_extra_patterns("claude", &[], false);
+        let (included, uncovered) =
+            collect_profile_entries(&cli_dir, "claude", &without).expect("collect");
+        let inc: Vec<String> = included
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&cli_dir)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert!(!inc.contains(&".credentials.json".to_string()));
+        let unc: Vec<&str> = uncovered.iter().map(|u| u.path.as_str()).collect();
+        assert!(unc.contains(&".credentials.json"), "obtido: {unc:?}");
+    }
+
+    #[test]
+    fn test_gemini_credential_is_not_swallowed_by_aggregated_subtree() {
+        // Caso limite da agregacao: `.gemini/` so com a credencial. Sem a flag
+        // a subarvore vira uma linha agregada; com a flag o arquivo entra no
+        // payload e nao pode continuar sendo reportado como fora.
+        let tmp = tempdir().expect("tempdir");
+        let cli_dir = tmp.path().join("gemini");
+        fs::create_dir_all(cli_dir.join(".gemini")).expect("mkdir");
+        fs::write(cli_dir.join(".gemini/oauth_creds.json"), "{}").expect("creds");
+
+        let with = cli_extra_patterns("gemini", &[], true);
+        let (included, uncovered) =
+            collect_profile_entries(&cli_dir, "gemini", &with).expect("collect");
+        assert_eq!(included.len(), 1, "a credencial precisa entrar no artefato");
+        assert!(
+            uncovered.is_empty(),
+            "nada pode restar como nao coberto: {uncovered:?}"
+        );
     }
 
     #[test]

@@ -361,11 +361,16 @@ Selection uses an allowlist, not a full copy of the profile. It includes:
 - for `claude`: `statusline-command.sh`, `plans/`, project memories under
   `projects/*/memory/`, and the plugin manifests (`plugins/installed_plugins.json`,
   `plugins/known_marketplaces.json`, `plugins/blocklist.json`);
-- for `codex`: `config.toml`, `hooks.json`, and the `memories/` directory.
+- for `codex`: `config.toml`, `hooks.json`, and the `memories/` directory;
+- for `gemini`: `.gemini/settings.json` and the `*.md` files under `.gemini/` (including
+  `GEMINI.md`). `gemini` nests its whole configuration under `<profile>/gemini/.gemini/`, so the
+  top-level patterns do not reach any of it.
 - the global Cloak `config.toml` and a versioned `manifest.json` at the artifact root.
 
-Sessions, logs, caches, downloaded plugins, and project history are left out. On real profiles
-this typically shrinks several GB down to a few MB.
+Sessions, logs, caches, downloaded plugins, and project history are left out. For `gemini` that
+includes `history/`, `tmp/`, the IDE caches under `.gemini/antigravity*`, and machine state
+(`installation_id`, `state.json`, `projects.json`, `trustedFolders.json`), which the CLI rebuilds.
+On real profiles this typically shrinks several GB down to a few MB.
 
 On every backup, `cloak` lists what it found in the profile that did **not** make it into the
 artifact — this exists because an allowlist, by nature, omits the unknown, and the report ensures
@@ -375,11 +380,15 @@ reports each file that was left out.
 
 ### Credentials
 
-`claude/.credentials.json` and `codex/auth.json` are **excluded from the backup by default**.
-They are OAuth tokens that expire and can be regenerated in minutes with `cloak login` on the
-destination machine. Use `--include-credentials` to include them explicitly — in that case, a
-leak of the artifact together with the passphrase grants direct access to the accounts, so weigh
-the risk before using this flag.
+`claude/.credentials.json`, `codex/auth.json`, `gemini/.gemini/oauth_creds.json`, and
+`gemini/.gemini/.env` are **excluded from the backup by default**. They are OAuth tokens and API
+keys that expire and can be regenerated in minutes with `cloak login` on the destination machine.
+Use `--include-credentials` to include them explicitly — in that case, a leak of the artifact
+together with the passphrase grants direct access to the accounts, so weigh the risk before using
+this flag.
+
+With `--include-credentials`, these files count as covered: they stop appearing in the uncovered
+report and in the manifest's `uncovered` list, because they are inside the artifact.
 
 ### Configuration in `config.toml`
 
