@@ -611,6 +611,7 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
             return Err(eyre!("profile '{profile}' does not exist"));
         }
         let mut all_uncovered = Vec::new();
+        let mut unreadable: Vec<String> = Vec::new();
 
         // Arquivos soltos na raiz do perfil (ex.: `.cloak`) ficam fora do laco
         // de CLIs abaixo, que so trata diretorios. `.cloak` esta na allowlist
@@ -661,8 +662,24 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
                     fs::create_dir_all(parent)
                         .wrap_err_with(|| format!("failed creating {}", parent.display()))?;
                 }
-                fs::copy(&src, &dest)
-                    .wrap_err_with(|| format!("failed copying {}", src.display()))?;
+                // Um arquivo ilegivel e' PULADO, nao fatal.
+                //
+                // Um symlink quebrado (`skills/x.md -> /nonexistent/y.md`, sobra
+                // comum depois de desinstalar um plugin ou skill) e' classificado
+                // como arquivo por `walk_files` e casa com a allowlist, mas
+                // `fs::copy` falha com ENOENT. Abortar aqui tornava o backup
+                // impossivel ate o usuario descobrir e apagar o arquivo, e a
+                // mensagem nao sugeria remedio. A mesma exposicao vale para
+                // qualquer arquivo removido entre `walk_files` e a copia.
+                if let Err(err) = fs::copy(&src, &dest) {
+                    // Uma falha no meio da escrita deixa destino parcial.
+                    let _ = fs::remove_file(&dest);
+                    let shown = src.strip_prefix(&profile_dir).unwrap_or(&src);
+                    unreadable.push(format!(
+                        "{} ({err})",
+                        shown.to_string_lossy().replace('\\', "/")
+                    ));
+                }
             }
 
             for u in uncovered {
@@ -678,6 +695,7 @@ pub fn run_backup(config: &Config, opts: BackupOptions) -> Result<()> {
         // copiadas pelo mesmo laco dos demais incluidos. Assim o relatorio e o
         // manifesto abaixo enxergam exatamente o que foi para o payload.
         print_backup_profile_report(profile, &all_uncovered);
+        print_unreadable_report(profile, &unreadable);
         profile_manifests.push(build_profile_manifest(profile, all_uncovered));
     }
 
@@ -756,6 +774,25 @@ fn print_backup_profile_report(profile: &str, uncovered: &[UncoveredEntry]) {
     }
 }
 
+/// Arquivos que casavam com a allowlist mas não puderam ser lidos.
+///
+/// Vai para stderr: é um aviso de backup incompleto, e stderr sobrevive a
+/// `cloak backup > relatorio.txt` e é o que o cron envia por e-mail.
+fn print_unreadable_report(profile: &str, unreadable: &[String]) {
+    if unreadable.is_empty() {
+        return;
+    }
+    eprintln!(
+        "  AVISO: {} arquivo(s) do perfil '{profile}' casavam com a allowlist mas nao \
+         puderam ser lidos e FICARAM DE FORA do artefato (symlink quebrado ou arquivo \
+         removido durante o backup):",
+        unreadable.len()
+    );
+    for item in unreadable {
+        eprintln!("    {profile}/{item}");
+    }
+}
+
 /// Escapa um valor para interpolação segura em `sh -c`.
 ///
 /// O destino típico é `/mnt/c/Users/...` num mount WSL, onde nome de usuário
@@ -811,6 +848,13 @@ fn replace_path_root(content: &str, from: &str, to: &str) -> String {
 
     let mut out = String::with_capacity(content.len());
     let mut rest = content;
+    // Ultimo caractere ja emitido em `out`. `before` sozinho nao serve como
+    // fronteira esquerda: a partir da segunda iteracao `rest` comeca logo
+    // depois do match anterior, entao `before` fica vazio e
+    // `next_back()` devolve `None`, que `is_none_or` aceita como fronteira.
+    // Era assim que `x/home/old/home/old` virava `x/home/old/home/new`: a
+    // segunda ocorrencia esta' aninhada dentro da primeira, ja rejeitada.
+    let mut last_emitted: Option<char> = None;
 
     while let Some(idx) = rest.find(from) {
         let (before, tail) = rest.split_at(idx);
@@ -819,6 +863,7 @@ fn replace_path_root(content: &str, from: &str, to: &str) -> String {
         let left_ok = before
             .chars()
             .next_back()
+            .or(last_emitted)
             .is_none_or(|c| !continues_path_component(c));
         let right_ok = after
             .chars()
@@ -826,44 +871,80 @@ fn replace_path_root(content: &str, from: &str, to: &str) -> String {
             .is_none_or(|c| !continues_path_component(c));
 
         out.push_str(before);
-        if left_ok && right_ok {
-            out.push_str(to);
-        } else {
-            out.push_str(from);
-        }
+        let emitted = if left_ok && right_ok { to } else { from };
+        out.push_str(emitted);
+        last_emitted = emitted.chars().next_back().or(last_emitted);
         rest = after;
     }
     out.push_str(rest);
     out
 }
 
-fn rewrite_paths_in_file(file: &Path, from: &str, to: &str) -> Result<bool> {
+/// Resultado de tentar reescrever os paths de um arquivo da área extraída.
+#[derive(Debug)]
+enum RewriteOutcome {
+    /// Nada a fazer: extensão fora de `REWRITE_EXTENSIONS` ou sem ocorrência.
+    Unchanged,
+    Rewritten,
+    /// O arquivo não pôde ser lido como texto e ficou INTACTO.
+    Skipped(String),
+}
+
+fn rewrite_paths_in_file(file: &Path, from: &str, to: &str) -> Result<RewriteOutcome> {
     let is_text = file
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| REWRITE_EXTENSIONS.contains(&e))
         .unwrap_or(false);
     if !is_text {
-        return Ok(false);
+        return Ok(RewriteOutcome::Unchanged);
     }
-    let content =
-        fs::read_to_string(file).wrap_err_with(|| format!("failed reading {}", file.display()))?;
+    // Leitura que falha NAO e' fatal. `fs::read_to_string` exige UTF-8, e um
+    // skill `.md` salvo em latin-1 ou um `.sh` com um byte nao-UTF-8 num
+    // comentario derrubava `rewrite_tree` e `run_restore` inteiros — DEPOIS da
+    // decifragem, sem restaurar nada e sem indicar que `--no-rewrite-paths` e'
+    // o contorno. Um arquivo que apenas nao pode ser reescrito e' pulado: ele
+    // chega ao destino como veio no artefato, so' com os paths da maquina de
+    // origem, e o restore reporta isso ao usuario.
+    let content = match fs::read_to_string(file) {
+        Ok(content) => content,
+        Err(err) => {
+            return Ok(RewriteOutcome::Skipped(format!(
+                "{} ({err})",
+                file.display()
+            )))
+        }
+    };
     let updated = replace_path_root(&content, from, to);
     if updated == content {
-        return Ok(false);
+        return Ok(RewriteOutcome::Unchanged);
     }
+    // A escrita, ao contrario da leitura, continua fatal: `fs::write` trunca
+    // antes de escrever, entao uma falha aqui pode deixar o arquivo pela
+    // metade. Copiar um arquivo truncado para o perfil do usuario e' pior do
+    // que abortar antes de tocar no destino.
     fs::write(file, updated).wrap_err_with(|| format!("failed writing {}", file.display()))?;
-    Ok(true)
+    Ok(RewriteOutcome::Rewritten)
 }
 
-fn rewrite_tree(dir: &Path, from: &str, to: &str, changed: &mut Vec<String>) -> Result<()> {
+fn rewrite_tree(
+    dir: &Path,
+    from: &str,
+    to: &str,
+    changed: &mut Vec<String>,
+    skipped: &mut Vec<String>,
+) -> Result<()> {
     for entry in fs::read_dir(dir).wrap_err_with(|| format!("failed reading {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            rewrite_tree(&path, from, to, changed)?;
-        } else if rewrite_paths_in_file(&path, from, to)? {
-            changed.push(path.display().to_string());
+            rewrite_tree(&path, from, to, changed, skipped)?;
+        } else {
+            match rewrite_paths_in_file(&path, from, to)? {
+                RewriteOutcome::Rewritten => changed.push(path.display().to_string()),
+                RewriteOutcome::Skipped(detail) => skipped.push(detail),
+                RewriteOutcome::Unchanged => {}
+            }
         }
     }
     Ok(())
@@ -999,23 +1080,65 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
     let extracted_profiles = extracted.join("profiles");
     if opts.rewrite_paths && extracted_profiles.exists() {
         let mut changed = Vec::new();
+        let mut skipped = Vec::new();
         let from_root = &manifest.profile_root;
         let to_root = profile_root.to_string_lossy();
-        rewrite_tree(&extracted_profiles, from_root, &to_root, &mut changed)?;
+        rewrite_tree(
+            &extracted_profiles,
+            from_root,
+            &to_root,
+            &mut changed,
+            &mut skipped,
+        )?;
         // Também reescrever o $HOME de origem, se diferente.
         let to_home = home.to_string_lossy();
         if manifest.home != to_home {
-            rewrite_tree(&extracted_profiles, &manifest.home, &to_home, &mut changed)?;
+            rewrite_tree(
+                &extracted_profiles,
+                &manifest.home,
+                &to_home,
+                &mut changed,
+                &mut skipped,
+            )?;
         }
         if !changed.is_empty() {
             println!("  paths reescritos em {} arquivo(s)", changed.len());
         }
+        // As duas passadas veem os mesmos arquivos ilegíveis; reportar uma vez.
+        skipped.sort();
+        skipped.dedup();
+        if !skipped.is_empty() {
+            eprintln!(
+                "  AVISO: {} arquivo(s) nao puderam ser lidos como texto e foram \
+                 restaurados SEM reescrita de paths — podem continuar apontando \
+                 para a maquina de origem (use --no-rewrite-paths para pular a \
+                 reescrita de todos):",
+                skipped.len()
+            );
+            for detail in &skipped {
+                eprintln!("    {detail}");
+            }
+        }
     }
 
     // Copiar cada perfil selecionado para o destino, aplicando permissões.
+    let mut restored = 0usize;
+    let mut skipped_profiles: Vec<String> = Vec::new();
     for pm in &restore_profiles {
         let src = extracted_profiles.join(&pm.name);
+        // Perfil listado no manifesto sem diretório no artefato: pular EM
+        // SILÊNCIO era o pior caso desta feature. O `cloak restore` imprimia
+        // só o cabeçalho, não restaurava nada e retornava 0 — o usuário
+        // acreditava que tinha funcionado. Acontece com artefato truncado e
+        // com perfil cujo conteúdo era todo não-coberto, caso em que
+        // `profiles/<nome>/` nunca chega a ser criado no payload.
         if !src.exists() {
+            eprintln!(
+                "  AVISO: perfil '{}' esta' no manifesto mas nao tem diretorio no \
+                 artefato (profiles/{} ausente); NADA foi restaurado para ele",
+                pm.name, pm.name
+            );
+            skipped_profiles.push(pm.name.clone());
             continue;
         }
         let dest = paths::profile_dir(&pm.name)?;
@@ -1023,8 +1146,35 @@ pub fn run_restore(_config: &Config, opts: RestoreOptions) -> Result<()> {
         // já existem no destino e não dá mais para distinguir o que era pré-existente.
         let preserved = collect_preserved_files(&src, &dest)?;
         copy_tree_secure(&src, &dest)?;
+        restored += 1;
         print_reconstruction_report(pm);
         print_preserved_report(&pm.name, &preserved);
+    }
+
+    // Zero perfis restaurados é uma falha, não um sucesso vazio: o comando
+    // existe para restaurar, e devolver 0 sem escrever nada faz um script
+    // que checa `$?` acreditar que o restore aconteceu.
+    if restored == 0 {
+        let detail = if skipped_profiles.is_empty() {
+            "o manifesto nao lista nenhum perfil".to_string()
+        } else {
+            format!(
+                "sem conteudo no artefato para: {}",
+                skipped_profiles.join(", ")
+            )
+        };
+        return Err(eyre!(
+            "nenhum perfil foi restaurado ({detail}); o artefato pode estar truncado \
+             ou ter sido gerado por uma versao do cloak que nao cobria esses perfis"
+        ));
+    }
+    if !skipped_profiles.is_empty() {
+        eprintln!(
+            "  {} de {} perfil(is) do manifesto foram pulados: {}",
+            skipped_profiles.len(),
+            restore_profiles.len(),
+            skipped_profiles.join(", ")
+        );
     }
 
     Ok(())
@@ -1069,6 +1219,37 @@ fn print_preserved_report(profile: &str, preserved: &[String]) {
     }
 }
 
+/// Aplica as permissoes do destino a um arquivo restaurado: 0600 no caso
+/// comum, 0700 quando a origem era executavel.
+///
+/// Forcar 0600 em tudo tirava o bit de execucao de arquivos que precisam dele:
+/// `statusline-command.sh` (na allowlist do claude e criado pelo proprio cloak
+/// com 0700), hooks referenciados em `codex/hooks.json` e executaveis sob
+/// `skills/` e `.agents/`. Todos voltavam do restore falhando com
+/// "Permission denied" no primeiro uso.
+///
+/// A permissao nunca e' afrouxada para grupo/outros: um `0755` na origem volta
+/// como `0700`.
+fn apply_restored_file_permissions(src: &Path, target: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let executable = fs::metadata(src)
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+        if executable {
+            return fs::set_permissions(target, fs::Permissions::from_mode(0o700))
+                .wrap_err_with(|| format!("failed setting permissions on {}", target.display()));
+        }
+    }
+
+    #[cfg(not(unix))]
+    let _ = src;
+
+    paths::set_owner_only_file(target)
+}
+
 fn copy_tree_secure(src: &Path, dest: &Path) -> Result<()> {
     paths::ensure_secure_dir(dest)?;
     for entry in fs::read_dir(src).wrap_err_with(|| format!("failed reading {}", src.display()))? {
@@ -1080,7 +1261,7 @@ fn copy_tree_secure(src: &Path, dest: &Path) -> Result<()> {
         } else {
             fs::copy(&path, &target)
                 .wrap_err_with(|| format!("failed copying {}", path.display()))?;
-            paths::set_owner_only_file(&target)?;
+            apply_restored_file_permissions(&path, &target)?;
         }
     }
     Ok(())
@@ -1617,10 +1798,63 @@ mod tests {
             "/home/new/.config/cloak/profiles",
         )
         .expect("rewrite");
-        assert!(changed);
+        assert!(matches!(changed, RewriteOutcome::Rewritten));
         let content = fs::read_to_string(&file).expect("read");
         assert!(content.contains("/home/new/.config/cloak/profiles/x/claude/p"));
         assert!(!content.contains("/home/old"));
+    }
+
+    #[test]
+    fn test_rewrite_paths_in_file_skips_non_utf8_instead_of_failing() {
+        // REGRESSAO: `fs::read_to_string` propagava com `?` e derrubava
+        // `rewrite_tree` e `run_restore` inteiros DEPOIS da decifragem, sem
+        // restaurar nada. Um skill `.md` em latin-1 ou um `.sh` com byte
+        // nao-UTF-8 num comentario bastava.
+        let tmp = tempdir().expect("tempdir");
+        let file = tmp.path().join("latin1.md");
+        // "instalação" em latin-1: 0xE7 e 0xE3 sao sequencias UTF-8 invalidas.
+        let raw: Vec<u8> = b"instala\xe7\xe3o em /home/old/x\n".to_vec();
+        fs::write(&file, &raw).expect("write latin1");
+
+        let outcome =
+            rewrite_paths_in_file(&file, "/home/old", "/home/new").expect("nao pode ser fatal");
+        assert!(
+            matches!(outcome, RewriteOutcome::Skipped(_)),
+            "arquivo ilegivel deve ser pulado e reportado; obtido: {outcome:?}"
+        );
+        assert_eq!(
+            fs::read(&file).expect("read back"),
+            raw,
+            "o arquivo pulado precisa ficar intacto"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_tree_reports_skipped_and_keeps_rewriting_the_rest() {
+        let tmp = tempdir().expect("tempdir");
+        fs::write(tmp.path().join("bad.md"), b"\xe7 /home/old/a").expect("bad");
+        fs::write(tmp.path().join("good.json"), r#"{"p":"/home/old/b"}"#).expect("good");
+
+        let mut changed = Vec::new();
+        let mut skipped = Vec::new();
+        rewrite_tree(
+            tmp.path(),
+            "/home/old",
+            "/home/new",
+            &mut changed,
+            &mut skipped,
+        )
+        .expect("rewrite_tree nao pode ser fatal");
+
+        assert_eq!(
+            changed.len(),
+            1,
+            "o arquivo legivel foi reescrito: {changed:?}"
+        );
+        assert_eq!(skipped.len(), 1, "o ilegivel foi reportado: {skipped:?}");
+        assert!(skipped[0].contains("bad.md"), "obtido: {skipped:?}");
+        let good = fs::read_to_string(tmp.path().join("good.json")).expect("read good");
+        assert!(good.contains("/home/new/b"), "obtido: {good}");
     }
 
     #[test]
@@ -1629,7 +1863,7 @@ mod tests {
         let file = tmp.path().join("f.json");
         fs::write(&file, r#"{"k":"/unrelated/path"}"#).expect("write");
         let changed = rewrite_paths_in_file(&file, "/home/old", "/home/new").expect("rewrite");
-        assert!(!changed);
+        assert!(matches!(changed, RewriteOutcome::Unchanged));
     }
 
     #[test]
@@ -1679,6 +1913,28 @@ mod tests {
     }
 
     #[test]
+    fn test_replace_path_root_left_boundary_survives_after_first_match() {
+        // REGRESSAO: `rest` avancava para depois de cada match, entao na
+        // iteracao seguinte `before` ficava vazio e `next_back()` devolvia
+        // `None`, que `is_none_or` tratava como fronteira valida. A segunda
+        // ocorrencia — aninhada dentro do proprio path ja rejeitado — era
+        // reescrita.
+        let out = replace_path_root("x/home/old/home/old", "/home/old", "/home/new");
+        assert_eq!(
+            out, "x/home/old/home/old",
+            "as duas ocorrencias sao componentes de um path alheio: {out}"
+        );
+    }
+
+    #[test]
+    fn test_replace_path_root_rewrites_second_occurrence_when_boundary_is_valid() {
+        // A fronteira nao pode virar bloqueio geral: duas raizes legitimas
+        // separadas continuam sendo reescritas.
+        let out = replace_path_root("\"/home/old/a\" \"/home/old/b\"", "/home/old", "/home/new");
+        assert_eq!(out, "\"/home/new/a\" \"/home/new/b\"");
+    }
+
+    #[test]
     fn test_replace_path_root_still_rejects_sibling_prefix() {
         // Regressao do achado anterior: nao pode casar dentro de nome maior.
         let out = replace_path_root("/home/anastacia/y", "/home/ana", "/home/bob");
@@ -1691,7 +1947,7 @@ mod tests {
         let file = tmp.path().join("f.json");
         fs::write(&file, r#"{"a":"/home/ana/x","b":"/home/anastacia/y"}"#).expect("write");
         let changed = rewrite_paths_in_file(&file, "/home/ana", "/home/bob").expect("rewrite");
-        assert!(changed);
+        assert!(matches!(changed, RewriteOutcome::Rewritten));
         let content = fs::read_to_string(&file).expect("read");
         assert!(content.contains("/home/bob/x"));
         assert!(content.contains("/home/anastacia/y"), "obtido: {content}");
@@ -1712,6 +1968,52 @@ mod tests {
 
         let preserved = collect_preserved_files(&src, &dest).expect("collect");
         assert_eq!(preserved, vec!["claude/token-novo.json".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_copy_tree_secure_preserves_execute_bit_without_loosening() {
+        use std::os::unix::fs::PermissionsExt;
+        // REGRESSAO: o restore forcava 0600 em TODO arquivo, tirando o bit de
+        // execucao. `statusline-command.sh` esta' na allowlist do claude e e'
+        // criado pelo proprio cloak com 0700; hooks de `codex/hooks.json` e
+        // executaveis sob `skills/` e `.agents/` voltavam sem permissao de
+        // execucao e falhavam com "Permission denied" no primeiro uso.
+        let tmp = tempdir().expect("tempdir");
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(src.join("skills")).expect("mkdir");
+        fs::write(src.join("settings.json"), "{}").expect("settings");
+        fs::write(src.join("statusline-command.sh"), "#!/bin/sh\n").expect("script");
+        fs::write(src.join("skills/tool"), "#!/bin/sh\n").expect("tool");
+        fs::set_permissions(
+            src.join("statusline-command.sh"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .expect("chmod script");
+        // Executavel frouxo na origem: o bit de execucao volta, o acesso de
+        // grupo/outros nao.
+        fs::set_permissions(src.join("skills/tool"), fs::Permissions::from_mode(0o755))
+            .expect("chmod tool");
+
+        copy_tree_secure(&src, &dest).expect("copy");
+
+        let mode = |p: &Path| fs::metadata(p).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(
+            mode(&dest.join("settings.json")),
+            0o600,
+            "arquivo comum continua 0600"
+        );
+        assert_eq!(
+            mode(&dest.join("statusline-command.sh")),
+            0o700,
+            "script executavel precisa voltar executavel"
+        );
+        assert_eq!(
+            mode(&dest.join("skills/tool")),
+            0o700,
+            "executavel frouxo volta como 0700, nunca 0755"
+        );
     }
 
     #[cfg(unix)]

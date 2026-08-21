@@ -378,6 +378,10 @@ omissão apareça antes de virar perda de dado. Um diretório totalmente fora da
 como uma única linha com o tamanho agregado; um diretório parcialmente coberto lista cada arquivo
 que ficou de fora.
 
+Um arquivo que casa com a allowlist mas não pode ser lido — tipicamente um symlink quebrado
+deixado por um plugin ou skill desinstalado, ou um arquivo removido durante o backup — é **pulado
+e reportado em `stderr`**, não aborta o backup. O artefato é gerado com todo o resto.
+
 ### Credenciais
 
 `claude/.credentials.json`, `codex/auth.json`, `gemini/.gemini/oauth_creds.json` e
@@ -441,6 +445,18 @@ conta OAuth) **antes** de escrever qualquer coisa no destino. Pontos importantes
   Claude detectados em `.claude.json` para reconciliação manual.
 - O `config.toml` global do Cloak entra no artefato como referência, mas o restore atual só mescla
   `profiles/`; ele não substitui a configuração global do destino.
+- Um perfil listado no manifesto que não tem diretório dentro do artefato (artefato truncado, ou
+  perfil cujo conteúdo era todo não-coberto) gera um **aviso explícito** em `stderr`. Se nenhum
+  perfil chegar a ser restaurado, o `cloak restore` **falha com código diferente de 0** em vez de
+  sair com sucesso sem ter escrito nada.
+- Um arquivo que não pode ser lido como texto (por exemplo um `.md` salvo em latin-1, ou um `.sh`
+  com byte não-UTF-8) é restaurado **intacto, porém sem reescrita de paths**, com um aviso em
+  `stderr`. Ele não derruba mais o restore. Use `--no-rewrite-paths` para desligar a reescrita em
+  todos os arquivos.
+- Arquivos executáveis voltam executáveis: um arquivo que era executável na origem é restaurado
+  com `0700`, os demais com `0600`. Isso vale para `statusline-command.sh`, hooks referenciados em
+  `codex/hooks.json` e executáveis sob `skills/` e `.agents/`. Em nenhum caso a permissão é
+  afrouxada para grupo ou outros.
 - Use `--dry-run` para ver o plano de restauração sem tocar no destino.
 
 ### Dependências de sistema

@@ -517,6 +517,13 @@ config_dir_env = "CLAUDE_CONFIG_DIR"
         let xdg = tmp.path().join("xdg");
         write_config(&xdg);
         seed_profile(&xdg);
+
+        // `statusline-command.sh` esta' na allowlist do claude e e' criado pelo
+        // proprio cloak com 0700. Ele precisa voltar do restore executavel.
+        let statusline = xdg.join("cloak/profiles/demo/claude/statusline-command.sh");
+        fs::write(&statusline, "#!/bin/sh\necho hi\n").expect("write statusline");
+        fs::set_permissions(&statusline, fs::Permissions::from_mode(0o700)).expect("chmod");
+
         let out_dir = tmp.path().join("backups");
 
         let status = Command::new(cloak_bin())
@@ -549,6 +556,7 @@ config_dir_env = "CLAUDE_CONFIG_DIR"
         let skills_dir = claude_dir.join("skills");
         let settings_file = claude_dir.join("settings.json");
         let skill_file = skills_dir.join("a.md");
+        let statusline_file = claude_dir.join("statusline-command.sh");
 
         for dir in [&profile_dir, &claude_dir, &skills_dir] {
             let mode = fs::metadata(dir).expect("metadata").permissions().mode() & 0o777;
@@ -559,6 +567,7 @@ config_dir_env = "CLAUDE_CONFIG_DIR"
                 dir.display()
             );
         }
+        // Arquivo comum: 0600.
         for file in [&settings_file, &skill_file] {
             let mode = fs::metadata(file).expect("metadata").permissions().mode() & 0o777;
             assert_eq!(
@@ -568,6 +577,19 @@ config_dir_env = "CLAUDE_CONFIG_DIR"
                 file.display()
             );
         }
+        // REGRESSAO: o restore forcava 0600 em TODO arquivo e o executavel
+        // voltava sem permissao de execucao — "Permission denied" no 1o uso.
+        let mode = fs::metadata(&statusline_file)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode,
+            0o700,
+            "executable {} must come back 0700, got {mode:o}",
+            statusline_file.display()
+        );
     }
 
     #[test]
@@ -925,6 +947,248 @@ config_dir_env = "CLAUDE_CONFIG_DIR"
                 "sem a flag a credencial precisa continuar no manifesto: {uncovered:?}"
             );
         }
+    }
+
+    /// Perfil cujo conteúdo é INTEIRAMENTE não-coberto: `profiles/<nome>/`
+    /// nunca chega a ser criado no payload, mas o manifesto lista o perfil.
+    fn seed_fully_uncovered_profile(xdg: &Path, name: &str) {
+        let claude = xdg.join(format!("cloak/profiles/{name}/claude"));
+        fs::create_dir_all(claude.join("sessions")).expect("mkdir sessions");
+        fs::write(claude.join("sessions/log.jsonl"), "junk").expect("session");
+    }
+
+    #[test]
+    fn restore_fails_when_no_profile_has_content_in_artifact() {
+        // REGRESSAO: `if !src.exists() { continue; }` descartava em silencio um
+        // perfil listado no manifesto sem diretorio no artefato. O restore
+        // imprimia so o cabecalho, nao restaurava nada e retornava 0.
+        if !gpg_available() {
+            eprintln!("skipping: gpg not available");
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let xdg = tmp.path().join("xdg");
+        write_config(&xdg);
+        seed_fully_uncovered_profile(&xdg, "demo");
+        let out_dir = tmp.path().join("backups");
+
+        let status = Command::new(cloak_bin())
+            .arg("backup")
+            .arg("--output")
+            .arg(&out_dir)
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .status()
+            .expect("run backup");
+        assert!(status.success(), "backup failed");
+
+        let artifact = find_artifact(&out_dir);
+        fs::remove_dir_all(xdg.join("cloak/profiles/demo")).expect("rm profile");
+
+        let output = Command::new(cloak_bin())
+            .arg("restore")
+            .arg(&artifact)
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .output()
+            .expect("run restore");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "restore que nao restaurou NENHUM perfil nao pode sair com 0\nstdout:\n{}\nstderr:\n{stderr}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(
+            stderr.contains("demo"),
+            "o perfil pulado precisa ser nomeado:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("nenhum perfil foi restaurado"),
+            "o motivo precisa ser explicito:\n{stderr}"
+        );
+    }
+
+    #[test]
+    fn restore_warns_about_skipped_profile_and_restores_the_rest() {
+        if !gpg_available() {
+            eprintln!("skipping: gpg not available");
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let xdg = tmp.path().join("xdg");
+        write_config(&xdg);
+        seed_profile(&xdg);
+        seed_fully_uncovered_profile(&xdg, "vazio");
+        let out_dir = tmp.path().join("backups");
+
+        let status = Command::new(cloak_bin())
+            .arg("backup")
+            .arg("--output")
+            .arg(&out_dir)
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .status()
+            .expect("run backup");
+        assert!(status.success(), "backup failed");
+
+        let artifact = find_artifact(&out_dir);
+        fs::remove_dir_all(xdg.join("cloak/profiles/demo")).expect("rm demo");
+        fs::remove_dir_all(xdg.join("cloak/profiles/vazio")).expect("rm vazio");
+
+        let output = Command::new(cloak_bin())
+            .arg("restore")
+            .arg(&artifact)
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .output()
+            .expect("run restore");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "restore parcial deve concluir\nstdout:\n{}\nstderr:\n{stderr}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(
+            stderr.contains("vazio"),
+            "o perfil pulado precisa ser nomeado no aviso:\n{stderr}"
+        );
+        assert!(
+            xdg.join("cloak/profiles/demo/claude/settings.json")
+                .exists(),
+            "o perfil com conteudo precisa ter sido restaurado"
+        );
+    }
+
+    #[test]
+    fn backup_skips_broken_symlink_instead_of_aborting() {
+        // REGRESSAO: `walk_files` classifica um symlink quebrado como arquivo,
+        // `is_allowed` casa com `skills/` e o `fs::copy` falhava com ENOENT,
+        // abortando o backup inteiro com exit 2 e sem produzir artefato.
+        use std::os::unix::fs::symlink;
+
+        if !gpg_available() {
+            eprintln!("skipping: gpg not available");
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let xdg = tmp.path().join("xdg");
+        write_config(&xdg);
+        seed_profile(&xdg);
+        let skills = xdg.join("cloak/profiles/demo/claude/skills");
+        symlink("/nonexistent/target.md", skills.join("broken.md")).expect("symlink");
+        let out_dir = tmp.path().join("backups");
+
+        let output = Command::new(cloak_bin())
+            .arg("backup")
+            .arg("--output")
+            .arg(&out_dir)
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .output()
+            .expect("run backup");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "um symlink obsoleto nao pode tornar o backup impossivel\nstdout:\n{}\nstderr:\n{stderr}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(
+            stderr.contains("broken.md"),
+            "o arquivo pulado precisa ser reportado:\n{stderr}"
+        );
+
+        let artifact = find_artifact(&out_dir);
+        let tar_tmp = tmp.path().join("decrypted.tar.gz");
+        gpg_decrypt_to(&artifact, &tar_tmp, "test-pass");
+        let entries = tar_list_entries(&tar_tmp);
+        assert!(
+            entries
+                .iter()
+                .any(|e| e == "profiles/demo/claude/skills/a.md"),
+            "o resto do perfil precisa continuar entrando: {entries:?}"
+        );
+        assert!(
+            !entries.iter().any(|e| e.contains("broken.md")),
+            "o symlink quebrado nao pode entrar no artefato: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn restore_skips_non_utf8_file_instead_of_aborting() {
+        // REGRESSAO: `rewrite_paths_in_file` usava `fs::read_to_string` e
+        // propagava com `?`, derrubando `run_restore` DEPOIS da decifragem —
+        // nada restaurado e nenhuma indicacao de `--no-rewrite-paths`.
+        if !gpg_available() {
+            eprintln!("skipping: gpg not available");
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let xdg = tmp.path().join("xdg");
+        write_config(&xdg);
+        seed_profile(&xdg);
+        // "instalação" em latin-1 dentro de um skill .md.
+        let latin1: Vec<u8> = b"instala\xe7\xe3o\n".to_vec();
+        let latin1_path = xdg.join("cloak/profiles/demo/claude/skills/latin1.md");
+        fs::write(&latin1_path, &latin1).expect("write latin1");
+        let out_dir = tmp.path().join("backups");
+
+        let status = Command::new(cloak_bin())
+            .arg("backup")
+            .arg("--output")
+            .arg(&out_dir)
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .status()
+            .expect("run backup");
+        assert!(status.success(), "backup failed");
+
+        let artifact = find_artifact(&out_dir);
+        fs::remove_dir_all(xdg.join("cloak/profiles/demo")).expect("rm profile");
+
+        let output = Command::new(cloak_bin())
+            .arg("restore")
+            .arg(&artifact)
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("HOME", tmp.path())
+            .env("CLOAK_BACKUP_PASSPHRASE", "test-pass")
+            .output()
+            .expect("run restore");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "um arquivo nao-UTF-8 nao pode derrubar o restore\nstdout:\n{}\nstderr:\n{stderr}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(
+            stderr.contains("latin1.md"),
+            "o arquivo pulado precisa ser reportado:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("--no-rewrite-paths"),
+            "o aviso precisa apontar o contorno:\n{stderr}"
+        );
+
+        let restored = xdg.join("cloak/profiles/demo/claude/skills/latin1.md");
+        assert_eq!(
+            fs::read(&restored).expect("read restored"),
+            latin1,
+            "o arquivo pulado precisa chegar ao destino intacto"
+        );
+        assert!(
+            xdg.join("cloak/profiles/demo/claude/settings.json")
+                .exists(),
+            "o resto do perfil precisa ter sido restaurado"
+        );
     }
 
     #[test]

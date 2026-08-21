@@ -378,6 +378,11 @@ an omission surfaces before it turns into data loss. A directory that is entirel
 allowlist shows up as a single line with the aggregate size; a partially-covered directory
 reports each file that was left out.
 
+A file that matches the allowlist but cannot be read — typically a broken symlink left behind by
+an uninstalled plugin or skill, or a file removed while the backup runs — is **skipped and
+reported on `stderr`**, and does not abort the backup. The artifact is produced with everything
+else.
+
 ### Credentials
 
 `claude/.credentials.json`, `codex/auth.json`, `gemini/.gemini/oauth_creds.json`, and
@@ -441,6 +446,18 @@ environment variable — with it set, `gpg` runs in non-interactive mode.
   detected in `.claude.json` so they can be reconciled manually.
 - The global Cloak `config.toml` is included in the archive as reference, but the current restore
   command only merges `profiles/`; it does not replace the destination's global config.
+- A profile listed in the manifest that has no directory inside the artifact (a truncated
+  artifact, or a profile whose content was entirely uncovered) produces an **explicit warning** on
+  `stderr`. If no profile ends up being restored at all, `cloak restore` **exits with a non-zero
+  status** instead of succeeding without having written anything.
+- A file that cannot be read as text (for example a `.md` saved in latin-1, or a `.sh` with a
+  non-UTF-8 byte) is restored **intact but without path rewriting**, with a warning on `stderr`.
+  It no longer brings the restore down. Use `--no-rewrite-paths` to disable rewriting for every
+  file.
+- Executable files come back executable: a file that was executable at the source is restored with
+  `0700`, everything else with `0600`. This covers `statusline-command.sh`, hooks referenced from
+  `codex/hooks.json`, and executables under `skills/` and `.agents/`. Permissions are never
+  loosened for group or others.
 - Use `--dry-run` to see the restore plan without touching the destination.
 
 ### System dependencies
