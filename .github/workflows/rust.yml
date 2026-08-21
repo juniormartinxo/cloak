@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [ "main" ]
 
+# Least privilege: o workflow so le o codigo, nao escreve nada no repositorio.
+permissions:
+  contents: read
+
+# Um push novo na mesma ref cancela a execucao anterior, que ja esta obsoleta.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -13,10 +22,40 @@ jobs:
   build:
 
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
+
+    - name: Toolchain versions
+      run: |
+        rustc --version
+        cargo --version
+        cargo fmt --version
+        cargo clippy --version
+
+    # `tests/backup_integration.rs` pula quando falta gpg (`gpg_available()` ->
+    # eprintln + return), e um teste que retorna cedo conta como aprovado. Sem
+    # esta checagem, uma imagem de runner sem gpg deixaria a CI verde sem nunca
+    # ter exercitado a cifragem, que e o nucleo da feature de backup.
+    - name: Backup tooling is present
+      run: |
+        for tool in gpg tar gzip; do
+          if ! command -v "$tool" >/dev/null; then
+            echo "::error::$tool not found; the backup integration tests would silently skip"
+            exit 1
+          fi
+          echo "$tool -> $(command -v "$tool")"
+        done
+
+    - name: Format
+      run: cargo fmt --check
+
+    - name: Clippy
+      run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
     - name: Build
-      run: cargo build --verbose
+      run: cargo build --locked --verbose
+
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --locked --verbose
