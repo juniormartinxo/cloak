@@ -107,10 +107,11 @@ enabled CLI.
 2. Parse the manifest and reject unsupported future format versions.
 3. Check destination uid, OAuth identity hints, requested profiles, and overwrite conditions.
 4. Optionally rewrite source home/profile roots in supported text files.
-5. Merge files into the destination with `0700` directories and `0600` files; never delete
-   destination-only files, and report them as preserved.
-6. Leave the archived global `config.toml` untouched; current restore scope is the `profiles/`
-   tree only.
+5. Merge files into the destination with `0700` directories, `0700` for files that were
+   executable at the source and `0600` for the rest; never delete destination-only files, and
+   report them as preserved.
+6. Write the archived global `config.toml` to `config.toml.from-backup` as a reference, with path
+   rewriting already applied. The `config.toml` in use is never overwritten or merged into.
 
 ## Security model
 

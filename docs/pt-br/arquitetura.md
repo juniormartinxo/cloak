@@ -108,10 +108,11 @@ habilitada.
 2. Interpreta o manifesto e recusa versões futuras de formato não suportadas.
 3. Verifica uid de destino, indícios de identidade OAuth, perfis pedidos e condições de overwrite.
 4. Opcionalmente reescreve home/raiz de perfis da origem em arquivos de texto suportados.
-5. Mescla arquivos no destino usando diretórios `0700` e arquivos `0600`; nunca apaga arquivos
-   exclusivos do destino e os reporta como preservados.
-6. Não altera o `config.toml` global arquivado; o escopo atual do restore é apenas a árvore
-   `profiles/`.
+5. Mescla arquivos no destino usando diretórios `0700`, `0700` para arquivos que eram
+   executáveis na origem e `0600` para os demais; nunca apaga arquivos exclusivos do destino e
+   os reporta como preservados.
+6. Grava o `config.toml` global arquivado em `config.toml.from-backup` como referência, com a
+   reescrita de paths já aplicada. O `config.toml` em uso nunca é sobrescrito nem mesclado.
 
 ## Seguranca
 

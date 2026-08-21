@@ -47,7 +47,7 @@ No wrappers running in background. No daemons. No persistent state. Just a clean
 | 🔍 **Automatic resolution** | Walks up to root; falls back to `default_profile` from config |
 | 👤 **Account inspection** | Shows which account each CLI profile appears to be authenticated with |
 | 📊 **Local usage limits** | Reads Claude and Codex snapshots and ranks profiles by available weekly capacity |
-| 🩺 **Doctor command** | Validates config, binaries, profile structure and credential hints |
+| 🩺 **Doctor command** | Validates config, binaries, profile structure, credential hints and backup tooling |
 | 💻 **Shell completions** | Bash, Zsh, Fish, PowerShell and Elvish |
 | 🖥️ **Claude statusline** | Auto-provisions a statusline script showing model/context/cost and persisting limit snapshots |
 | 🔌 **MCP lifecycle** | Catalog-based install, native install, idempotent removal and JSON-RPC health checks per profile |
@@ -297,7 +297,7 @@ cloak mcp add [name]               List the built-in catalog or install a catalo
 cloak mcp install <cli> <name>     Install an MCP server using the target CLI's native syntax
 cloak mcp remove <name>            Remove an MCP registration (idempotent when absent)
 cloak mcp doctor                   Probe configured stdio MCPs through JSON-RPC
-cloak permission ask [--agent X]  Configure agent permissions interactively
+cloak permission ask [--agent X]   Configure agent permissions interactively
 cloak backup [options]             Create an encrypted allowlisted backup
 cloak restore <archive> [options]  Restore profiles with identity and format checks
 cloak doctor                       Check config, binaries, profiles and backup tools
@@ -366,7 +366,9 @@ never overwritten.
 - Backups are always encrypted with GPG/AES-256; OAuth files are excluded unless
   `--include-credentials` is explicitly passed.
 - Profile and CLI directories are created with **owner-only permissions** (`0700`) on Unix.
-- Files created or restored by `cloak`, including backup artifacts, use `0600` on Unix.
+- Files created by `cloak`, including backup artifacts, use `0600` on Unix. Restored files keep
+  `0700` when the source file was executable, and `0600` otherwise; permissions are never
+  loosened for group or others.
 - Conflicting env vars are **stripped** before exec so no ambient credential leaks into a session.
 
 ---

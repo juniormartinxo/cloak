@@ -47,7 +47,7 @@ Sem wrappers rodando em segundo plano. Sem daemons. Sem estado persistente. Apen
 | 🔍 **Resolução automática** | Percorre até a raiz; faz fallback para `default_profile` da configuração |
 | 👤 **Inspeção de conta** | Mostra com qual conta cada CLI do perfil parece estar autenticada |
 | 📊 **Limites locais de uso** | Lê snapshots de Claude e Codex e ranqueia perfis pela capacidade semanal disponível |
-| 🩺 **Comando doctor** | Valida a configuração, binários, estrutura do perfil e dicas de credenciais |
+| 🩺 **Comando doctor** | Valida a configuração, binários, estrutura do perfil, dicas de credenciais e ferramentas de backup |
 | 💻 **Completions de shell** | Bash, Zsh, Fish, PowerShell e Elvish |
 | 🖥️ **Statusline do Claude** | Provisiona automaticamente um script de statusline mostrando modelo/contexto/custo e persistindo snapshots de limites |
 | 🔌 **Ciclo de vida de MCPs** | Catálogo, instalação nativa, remoção idempotente e diagnóstico JSON-RPC por perfil |
@@ -294,9 +294,9 @@ cloak mcp add [nome]               Lista o catálogo embutido ou instala uma ent
 cloak mcp install <cli> <nome>     Instala um servidor MCP usando a sintaxe nativa da CLI alvo
 cloak mcp remove <nome>            Remove um registro MCP (idempotente quando ausente)
 cloak mcp doctor                   Testa MCPs stdio configurados via JSON-RPC
-cloak permission ask [--agent X]  Configura permissões do agente interativamente
-cloak backup [opções]            Cria um backup cifrado baseado em allowlist
-cloak restore <arquivo> [opções] Restaura perfis com checagens de identidade e formato
+cloak permission ask [--agent X]   Configura permissões do agente interativamente
+cloak backup [opções]              Cria um backup cifrado baseado em allowlist
+cloak restore <arquivo> [opções]   Restaura perfis com checagens de identidade e formato
 cloak doctor                       Verifica config, binários, perfis e ferramentas de backup
 cloak completions <shell>          Imprime script de autocompletar do shell
 ```
@@ -360,7 +360,9 @@ contexto / custo** (requer `jq`) e persiste o snapshot mais recente de `rate_lim
 - Backups são sempre cifrados com GPG/AES-256; arquivos OAuth só entram quando
   `--include-credentials` é informado explicitamente.
 - Diretórios de perfil e CLI são criados com **permissões apenas para o proprietário** (`0700`) no Unix.
-- Arquivos criados ou restaurados pelo `cloak`, inclusive artefatos de backup, usam `0600` no Unix.
+- Arquivos criados pelo `cloak`, inclusive artefatos de backup, usam `0600` no Unix. Arquivos
+  restaurados mantêm `0700` quando eram executáveis na origem, e `0600` nos demais casos; a
+  permissão nunca é afrouxada para grupo ou outros.
 - Variáveis de ambiente conflitantes são **removidas** antes do exec para que nenhuma credencial de ambiente vaze para uma sessão.
 
 ---
