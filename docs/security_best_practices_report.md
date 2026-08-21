@@ -1,5 +1,10 @@
 # Security Best Practices Report
 
+> Review snapshot from 2026-03-25 (`f3f4bd9`). This report preserves the findings from that
+> checkout and has not been re-audited against later MCP, permission, or encrypted backup/restore
+> features. Line references and statements about the "current" code should be read in that
+> historical scope, not as a security assessment of version 0.3.1.
+
 ## Executive Summary
 
 Scope: manual security review of the Rust CLI implementation in `src/`, with emphasis on filesystem handling, profile resolution, process execution, and local trust boundaries.
