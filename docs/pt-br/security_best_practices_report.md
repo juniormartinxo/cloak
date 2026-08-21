@@ -1,5 +1,10 @@
 # Relatorio de Boas Praticas de Seguranca
 
+> Snapshot da revisão feita em 2026-03-25 (`f3f4bd9`). Este relatório preserva os achados daquele
+> checkout e não foi re-auditado depois das features de MCP, permissões e backup/restore cifrado.
+> Referências de linha e afirmações sobre o código "atual" devem ser lidas dentro daquele contexto
+> histórico, não como uma avaliação de segurança da versão 0.3.1.
+
 ## Resumo Executivo
 
 Escopo: revisao manual de seguranca da implementacao da CLI em Rust em `src/`, com enfase em manipulacao do sistema de arquivos, resolucao de perfis, execucao de processos e limites locais de confianca.
