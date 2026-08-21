@@ -14,7 +14,7 @@
 Global installation from this repository:
 
 ```bash
-cd /home/junior/apps/jm/cloak
+cd cloak
 cargo install --path . --force
 ```
 
@@ -78,6 +78,77 @@ cloak mcp install codex filesystem --all-profiles -- npx @modelcontextprotocol/s
 
 If you omit both `--profile` and `--all-profiles` in an interactive terminal, `cloak` resolves the
 current profile first and then asks whether you want to apply the install to all profiles.
+
+### Built-in MCP catalog
+
+For common servers, prefer the registry-backed command:
+
+```bash
+# list the current catalog
+cloak mcp add
+
+# inspect the native commands without installing
+cloak mcp add gitnexus --show
+
+# install for selected CLIs and one profile
+cloak mcp add gitnexus --for codex,claude --profile work --yes
+
+# remove an existing registration before reinstalling
+cloak mcp add filesystem --replace --profile work --yes
+```
+
+The built-in registry currently covers reference servers and popular integrations such as
+`filesystem`, `git`, `memory`, `playwright`, `context7`, `gitnexus`, `github`, `shadcn`, and
+`sentry`. Entries can expand environment variables plus `${CWD}` and `${HOME}`. Installation
+stops with an explicit error when a required variable is missing.
+
+The registry can also be extended without changing the binary. Add entries to
+`~/.config/cloak/mcp_registry.toml`; user entries override built-in entries with the same name.
+
+### Remove and diagnose MCP servers
+
+`mcp remove` delegates to the native CLI and is idempotent: an absent server is reported as
+`not installed` instead of failing the whole operation.
+
+```bash
+# preview one profile/CLI pair
+cloak mcp remove filesystem --profile work --for codex --dry-run
+
+# remove from every existing profile for supported CLIs
+cloak mcp remove filesystem --all-profiles --yes
+```
+
+`mcp doctor` reads configured stdio MCPs from the selected Claude/Codex profiles and performs a
+real JSON-RPC `initialize` handshake. HTTP/SSE entries are reported but are not spawned as stdio
+processes.
+
+```bash
+cloak mcp doctor --profile work
+cloak mcp doctor --all-profiles --name gitnexus --timeout 10 --with-tools
+```
+
+`--with-tools` sends `tools/list` after a successful initialization. A failed probe makes the
+command exit with an error after all matching entries have been checked.
+
+## Configure agent permissions
+
+Run the guided questionnaire to maintain an `[agents.<name>]` policy in `config.toml`:
+
+```bash
+cloak permission ask --agent codex
+cloak permission ask --agent claude
+```
+
+The questionnaire covers shell access, file writes, network access, explicit command allowlists,
+and denylists. `cloak exec` checks the first forwarded command token before launching the agent:
+explicit denies win, dangerous commands require an explicit allowlist entry, and a non-empty
+allowlist rejects commands not listed. Starting an interactive agent without a forwarded command
+has no command token to classify.
+
+For Claude, saving the policy also synchronizes generated `allow` and `deny` rules to
+`settings.json` in every existing Claude profile while preserving unrelated permission fields
+such as `ask` and `defaultMode`. Other agents receive wrapper-level checks but no native settings
+synchronization unless an adapter exists.
 
 ## Inspect authenticated accounts in a profile
 
@@ -284,10 +355,14 @@ cloak restore /path/to/cloak-backup-20260725-122130.tar.gz.gpg
 
 Selection uses an allowlist, not a full copy of the profile. It includes:
 
-- `settings.json`, `keybindings.json`, `*.md` files, the `skills/` directory, and `.agents/`;
-- for `claude`: `statusline-command.sh` and the plugin manifests
-  (`plugins/installed_plugins.json`, `plugins/known_marketplaces.json`, `plugins/blocklist.json`);
+- `settings.json`, `keybindings.json`, top-level `*.md` files, and the full `skills/` and
+  `.agents/` directories;
+- a profile-root `.cloak` file when present;
+- for `claude`: `statusline-command.sh`, `plans/`, project memories under
+  `projects/*/memory/`, and the plugin manifests (`plugins/installed_plugins.json`,
+  `plugins/known_marketplaces.json`, `plugins/blocklist.json`);
 - for `codex`: `config.toml`, `hooks.json`, and the `memories/` directory.
+- the global Cloak `config.toml` and a versioned `manifest.json` at the artifact root.
 
 Sessions, logs, caches, downloaded plugins, and project history are left out. On real profiles
 this typically shrinks several GB down to a few MB.
@@ -327,7 +402,8 @@ include = []
   not remove any default entry.
 
 The artifact name follows the pattern `cloak-backup-<YYYYMMDD-HHMMSS>.tar.gz.gpg` and is created
-with `0600` permissions.
+with `0600` permissions. Encryption is written to a `.partial` path first and renamed only after
+GPG succeeds, so an interrupted run does not leave a truncated artifact under the final name.
 
 ### Non-interactive use (cron/CI)
 
@@ -343,6 +419,8 @@ environment variable — with it set, `gpg` runs in non-interactive mode.
 - It refuses to overwrite an existing profile; pass `--force` to allow it.
 - If the identity recorded in the manifest cannot be verified, restore also requires `--force` —
   the failure mode is safe by default, never silent.
+- A backup with a newer `format_version` is rejected even with `--force`; update `cloak` before
+  restoring it.
 - **It is a merge, not a replacement**: nothing in the destination profile is deleted. Files that
   already exist at the destination and are not present in the artifact are preserved, and restore
   explicitly lists those preserved files at the end.
@@ -350,7 +428,10 @@ environment variable — with it set, `gpg` runs in non-interactive mode.
   root) inside `.json`, `.toml`, `.md`, and `.sh` files. Use `--no-rewrite-paths` to disable this
   rewriting.
 - At the end, it reports what was not part of the backup and will be rebuilt automatically by the
-  CLIs on first run (plugins, marketplaces, registered MCP servers).
+  CLIs on first run (plugins and marketplaces). The manifest also records the Claude MCP names
+  detected in `.claude.json` so they can be reconciled manually.
+- The global Cloak `config.toml` is included in the archive as reference, but the current restore
+  command only merges `profiles/`; it does not replace the destination's global config.
 - Use `--dry-run` to see the restore plan without touching the destination.
 
 ### System dependencies
