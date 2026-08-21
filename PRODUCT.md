@@ -10,7 +10,13 @@ Developers and technical leads who use multiple LLM CLIs across work, personal, 
 
 ## Product Purpose
 
-`cloak` isolates LLM CLI profiles per directory. It resolves the nearest `.cloak` file, prepares the correct config home and environment variables, removes conflicting secrets, and hands off to the real CLI with a clean `exec`. Success means the right account is active automatically for every repo.
+`cloak` isolates LLM CLI profiles per directory. It resolves the nearest `.cloak` file, prepares
+the correct config home and environment variables, removes conflicting secrets, and hands off to
+the real CLI with a clean `exec`. Around that core, it inspects local account/limit state, manages
+per-profile MCP registrations, synchronizes supported agent permissions, and moves allowlisted
+profile knowledge through encrypted backup/restore artifacts. Success means the right account and
+tooling context are active automatically for every repo without making hidden global state the
+user's responsibility.
 
 ## Brand Personality
 
